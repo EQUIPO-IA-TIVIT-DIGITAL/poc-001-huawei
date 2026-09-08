@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Carga y procesa tus videos con AccessFan">
+    <title>AccessFan - Carga de Videos</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header tivit-header">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div class="tivit-logo">TIVIT</div>
+                    <h1 style="font-size: 2rem; margin-top: 10px;">🎬 AccessFan</h1>
+                    <p class="subtitle">Plataforma de contenido generado por usuarios</p>
+                </div>
+                <div style="text-align: right;">
+                    <p style="margin: 0; color: #94a3b8;">Bienvenido, <strong style="color: #f8fafc;">{{ usuario if usuario else session.get('nombre_completo', 'Usuario') }}</strong></p>
+                    <a href="{{ url_for('auth.logout') }}" style="color: #E30613; text-decoration: none; font-size: 14px; font-weight: 600;">Cerrar Sesión</a>
+                </div>
+            </div>
+        </header>
+
+        <nav class="nav-tabs">
+            <a href="/" class="nav-tab active">📤 Subir Video</a>
+            <a href="/estado-consulta" class="nav-tab">🔍 Mis Videos</a>
+        </nav>
+
+        <main class="main-content">
+            <section class="card">
+                <h2>📁 Sube tu video</h2>
+                
+                <form id="uploadForm" class="form" enctype="multipart/form-data">
+                    <!-- Zona de arrastrar y soltar -->
+                    <div class="upload-zone" id="dropZone">
+                        <div class="upload-icon">📹</div>
+                        <p>Arrastra tu video aquí o <strong>haz clic para seleccionar</strong></p>
+                        <p class="file-info">Formatos: MP4, AVI, MOV, MKV, WebM | Máximo: 100MB | Duración máx: 60s</p>
+                        <input type="file" id="videoInput" name="video" accept="video/*" hidden>
+                    </div>
+                    
+                    <!-- Información del archivo seleccionado -->
+                    <div id="fileInfo" class="alert alert-info hidden">
+                        <span class="alert-icon">📎</span>
+                        <div>
+                            <strong id="fileName">-</strong>
+                            <span id="fileSize" class="text-muted"></span>
+                        </div>
+                    </div>
+
+                    <!-- Campo de usuario oculto, ya no es necesario en el formulario -->
+                    <!-- El usuario viene de la sesión -->
+
+                    <!-- Descripción del video -->
+                    <div class="form-group">
+                        <label for="descripcion">📝 Descripción del video</label>
+                        <textarea 
+                            id="descripcion" 
+                            name="descripcion" 
+                            placeholder="Describe brevemente el contenido de tu video..."
+                            required
+                            maxlength="500"
+                            rows="4"
+                        ></textarea>
+                        <small class="text-muted"><span id="charCount">0</span>/500 caracteres</small>
+                    </div>
+
+                    <!-- Términos y condiciones -->
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="terminos" required>
+                            <span>Acepto que mi video será analizado para verificar que cumple con las políticas de contenido</span>
+                        </label>
+                    </div>
+
+                    <!-- Botón de envío -->
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                        <span class="btn-icon">🚀</span>
+                        Subir y Procesar Video
+                    </button>
+                </form>
+
+                <!-- Barra de progreso -->
+                <div id="progressContainer" class="hidden mt-20">
+                    <p id="progressText" class="text-center mb-20">Subiendo video...</p>
+                    <div class="progress-bar">
+                        <div class="progress-bar-fill" id="progressBar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Resultado del procesamiento -->
+            <section id="resultSection" class="card hidden">
+                <div id="resultContent">
+                    <!-- Se llenará dinámicamente -->
+                </div>
+            </section>
+
+            <!-- Información de ayuda -->
+            <section class="card">
+                <h2>ℹ️ ¿Cómo funciona?</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-icon">1️⃣</span>
+                        <div>
+                            <strong>Sube tu video</strong>
+                            <p>Selecciona o arrastra tu archivo de video</p>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-icon">2️⃣</span>
+                        <div>
+                            <strong>Análisis automático</strong>
+                            <p>Nuestro sistema de IA analiza el contenido</p>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-icon">3️⃣</span>
+                        <div>
+                            <strong>Revisión si es necesario</strong>
+                            <p>Algunos videos pasan a revisión manual</p>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-icon">4️⃣</span>
+                        <div>
+                            <strong>Resultado</strong>
+                            <p>Recibe la aprobación o feedback</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>AccessFan © 2025 - Powered by <strong style="color: #E30613;">TIVIT Latam</strong> | Sistema de gestión de contenido UGC con Brand Safety</p>
+        </footer>
+    </div>
+
+    <style>
+        /* Estilos TIVIT Brand */
+        .tivit-header {
+            border-bottom: 4px solid #E30613;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-radius: 12px;
+            padding: 30px !important;
+        }
+        
+        .tivit-logo {
+            font-size: 28px;
+            font-weight: 900;
+            letter-spacing: 2px;
+            color: #E30613;
+            text-shadow: 0 2px 4px rgba(227, 6, 19, 0.3);
+        }
+        
+        /* Estilos adicionales específicos para upload */
+        .checkbox-label {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            cursor: pointer;
+            font-weight: normal;
+        }
+        
+        .checkbox-label input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-top: 3px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+        
+        .info-item {
+            display: flex;
+            gap: 15px;
+            padding: 15px;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-sm);
+        }
+        
+        .info-icon {
+            font-size: 1.5rem;
+        }
+        
+        .info-item p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 4px;
+        }
+        
+        .text-muted {
+            color: var(--text-muted);
+        }
+
+        /* Animación de carga */
+        .loading .btn-icon {
+            animation: spin 1s linear infinite;
+        }
+    </style>
+
+    <script>
+        // Variables globales
+        const uploadForm = document.getElementById('uploadForm');
+        const dropZone = document.getElementById('dropZone');
+        const videoInput = document.getElementById('videoInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const submitBtn = document.getElementById('submitBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const resultSection = document.getElementById('resultSection');
+        const resultContent = document.getElementById('resultContent');
+        const descripcion = document.getElementById('descripcion');
+        const charCount = document.getElementById('charCount');
+
+        // Contador de caracteres
+        descripcion.addEventListener('input', () => {
+            charCount.textContent = descripcion.value.length;
+        });
+
+        // Zona de arrastrar y soltar
+        dropZone.addEventListener('click', () => videoInput.click());
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type.startsWith('video/')) {
+                videoInput.files = files;
+                showFileInfo(files[0]);
+            }
+        });
+
+        // Mostrar información del archivo seleccionado
+        videoInput.addEventListener('change', () => {
+            if (videoInput.files.length > 0) {
+                showFileInfo(videoInput.files[0]);
+            }
+        });
+
+        function showFileInfo(file) {
+            fileName.textContent = file.name;
+            const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+            fileSize.textContent = ` (${sizeMB} MB)`;
+            fileInfo.classList.remove('hidden');
+        }
+
+        // Enviar formulario
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // Validar que se seleccionó un archivo
+            if (!videoInput.files || videoInput.files.length === 0) {
+                showResult('error', 'Por favor selecciona un video');
+                return;
+            }
+
+            // Preparar datos
+            const formData = new FormData();
+            formData.append('video', videoInput.files[0]);
+            formData.append('usuario', document.getElementById('usuario').value);
+            formData.append('descripcion', document.getElementById('descripcion').value);
+
+            // Mostrar progreso
+            submitBtn.disabled = true;
+            submitBtn.classList.add('loading');
+            submitBtn.innerHTML = '<span class="spinner"></span> Procesando...';
+            progressContainer.classList.remove('hidden');
+            resultSection.classList.add('hidden');
+
+            try {
+                const xhr = new XMLHttpRequest();
+                
+                // Progreso de subida
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressBar.style.width = percent + '%';
+                        if (percent < 100) {
+                            progressText.textContent = `Subiendo video... ${percent}%`;
+                        } else {
+                            progressText.textContent = 'Analizando contenido con IA...';
+                        }
+                    }
+                });
+
+                // Respuesta
+                xhr.onload = function() {
+                    const response = JSON.parse(xhr.responseText);
+                    
+                    if (xhr.status === 200 && response.success) {
+                        showResult('success', response);
+                    } else {
+                        showResult('error', response);
+                    }
+                    
+                    resetForm();
+                };
+
+                xhr.onerror = function() {
+                    showResult('error', { error: 'Error de conexión con el servidor' });
+                    resetForm();
+                };
+
+                xhr.open('POST', '/upload');
+                xhr.send(formData);
+
+            } catch (error) {
+                showResult('error', { error: error.message });
+                resetForm();
+            }
+        });
+
+        function resetForm() {
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('loading');
+            submitBtn.innerHTML = '<span class="btn-icon">🚀</span> Subir y Procesar Video';
+            progressContainer.classList.add('hidden');
+            progressBar.style.width = '0%';
+        }
+
+        function showResult(type, data) {
+            resultSection.classList.remove('hidden');
+            
+            if (type === 'success') {
+                resultContent.innerHTML = `
+                    <div class="alert alert-success">
+                        <span class="alert-icon">✅</span>
+                        <div>
+                            <strong>${data.message}</strong>
+                            <p>Tu video ha sido procesado exitosamente.</p>
+                        </div>
+                    </div>
+                    <div class="video-card">
+                        <div class="video-card-header">
+                            <span class="video-id">ID: ${data.video.id}</span>
+                            <span class="badge badge-success">✅ Aprobado</span>
+                        </div>
+                        <div class="video-card-body">
+                            <p><strong>Usuario:</strong> ${data.video.usuario}</p>
+                            <p><strong>Descripción:</strong> ${data.video.descripcion}</p>
+                            <p><strong>Duración:</strong> ${data.video.duracion_segundos || '-'} segundos</p>
+                        </div>
+                    </div>
+                    <p class="text-center mt-20">
+                        <a href="/estado-consulta" class="btn btn-secondary">Ver mis videos</a>
+                    </p>
+                `;
+            } else {
+                const errorMsg = typeof data === 'string' ? data : (data.error || 'Error desconocido');
+                resultContent.innerHTML = `
+                    <div class="alert alert-danger">
+                        <span class="alert-icon">❌</span>
+                        <div>
+                            <strong>No se pudo procesar el video</strong>
+                            <p>${errorMsg}</p>
+                            ${data.detalles?.razon ? `<p><em>Razón: ${data.detalles.razon}</em></p>` : ''}
+                        </div>
+                    </div>
+                    ${data.video_id ? `
+                        <p class="text-muted">ID de referencia: ${data.video_id}</p>
+                    ` : ''}
+                `;
+            }
+            
+            // Scroll al resultado
+            resultSection.scrollIntoView({ behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>

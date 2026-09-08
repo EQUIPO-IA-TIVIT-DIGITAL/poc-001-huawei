@@ -1,0 +1,777 @@
+"""
+Blueprint de Autenticación - AccessFan
+Maneja el login, logout y registro de usuarios
+"""
+
+from flask import (
+    Blueprint,
+    request,
+    render_template,
+    jsonify,
+    session,
+    redirect,
+    url_for,
+    flash,
+)
+from datetime import datetime
+
+from domain.entities import Usuario, RolUsuario, ReglaNegocioException
+from infrastructure.dependencies import get_user_repository
+from infrastructure.rate_limiter import (
+    limiter,
+    LOGIN_LIMIT,
+    REGISTRO_LIMIT,
+    POLLING_LIMIT,
+)
+from infrastructure.services.logging_service import get_logger
+import uuid
+from cachetools import TTLCache
+import threading
+import time
+import os
+
+# ===== Account Lockout =====
+# Use TTLCache to auto-evict entries after LOCKOUT_DURATION_SECONDS (prevents memory leak)
+MAX_FAILED_ATTEMPTS = int(os.getenv("AUTH_MAX_FAILED_ATTEMPTS", "5"))
+LOCKOUT_WINDOW_SECONDS = int(os.getenv("AUTH_LOCKOUT_WINDOW_SECONDS", "300"))  # 5 minutes
+LOCKOUT_DURATION_SECONDS = int(os.getenv("AUTH_LOCKOUT_DURATION_SECONDS", "900"))  # 15 minutes
+_failed_logins = TTLCache(maxsize=10000, ttl=LOCKOUT_DURATION_SECONDS)  # username -> [timestamps]
+_lockout_lock = threading.Lock()
+logger = get_logger(__name__)
+
+
+def _normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _mask_identifier(value: str) -> str:
+    if not value:
+        return "<empty>"
+    if len(value) <= 2:
+        return "*" * len(value)
+    return f"{value[0]}***{value[-1]}"
+
+
+def _client_ip() -> str:
+    # FIX: usar remote_addr tras ProxyFix (evita IP spoof via X-Forwarded-For inyectado)
+    return request.remote_addr or "127.0.0.1"
+
+
+def _lockout_key(username: str) -> str:
+    return f"auth:failed_login:{_normalize_username(username)}"
+
+
+def _redis_failed_attempts_count(username: str) -> int:
+    """Count failed attempts in a sliding window using Redis sorted set."""
+    try:
+        from infrastructure.services.job_queue import get_redis_connection
+
+        redis_conn = get_redis_connection()
+        key = _lockout_key(username)
+        now = int(time.time())
+
+        pipe = redis_conn.pipeline()
+        pipe.zremrangebyscore(key, 0, now - LOCKOUT_WINDOW_SECONDS)
+        pipe.zcard(key)
+        _, count = pipe.execute()
+        return int(count or 0)
+    except Exception:
+        return -1
+
+
+def _record_failed_login_redis(username: str) -> bool:
+    """Record failed attempt with Redis if available."""
+    try:
+        from infrastructure.services.job_queue import get_redis_connection
+
+        redis_conn = get_redis_connection()
+        key = _lockout_key(username)
+        now = int(time.time())
+        token = f"{now}:{uuid.uuid4().hex[:10]}"
+
+        pipe = redis_conn.pipeline()
+        pipe.zadd(key, {token: now})
+        pipe.zremrangebyscore(key, 0, now - LOCKOUT_WINDOW_SECONDS)
+        pipe.expire(key, LOCKOUT_DURATION_SECONDS)
+        pipe.execute()
+        return True
+    except Exception:
+        return False
+
+
+def _login_rate_limit_key() -> str:
+    username = ""
+    if request.method == "POST":
+        if request.is_json:
+            data = request.get_json(silent=True) or {}
+            username = _normalize_username(data.get("username", ""))
+        else:
+            username = _normalize_username(request.form.get("username", ""))
+    return f"{_client_ip()}:{username or 'unknown'}"
+
+
+def _register_rate_limit_key() -> str:
+    email = ""
+    if request.method == "POST":
+        if request.is_json:
+            data = request.get_json(silent=True) or {}
+            email = _normalize_email(data.get("email", ""))
+        else:
+            email = _normalize_email(request.form.get("email", ""))
+    return f"{_client_ip()}:{email or 'unknown'}"
+
+
+def _check_account_lockout(username: str) -> bool:
+    """Check if account is locked due to too many failed login attempts"""
+    redis_count = _redis_failed_attempts_count(username)
+    if redis_count >= 0:
+        return redis_count >= MAX_FAILED_ATTEMPTS
+
+    with _lockout_lock:
+        now = datetime.now()
+        normalized = _normalize_username(username)
+        timestamps = _failed_logins.get(normalized, [])
+        # Check recent attempts within the lockout window
+        recent = [
+            t for t in timestamps
+            if (now - t).total_seconds() < LOCKOUT_WINDOW_SECONDS
+        ]
+        return len(recent) >= MAX_FAILED_ATTEMPTS
+
+
+def _record_failed_login(username: str):
+    """Record a failed login attempt"""
+    if _record_failed_login_redis(username):
+        return
+
+    with _lockout_lock:
+        normalized = _normalize_username(username)
+        timestamps = _failed_logins.get(normalized, [])
+        timestamps.append(datetime.now())
+        _failed_logins[normalized] = timestamps
+
+
+def _clear_failed_logins(username: str):
+    """Clear failed login attempts after successful login"""
+    try:
+        from infrastructure.services.job_queue import get_redis_connection
+
+        redis_conn = get_redis_connection()
+        redis_conn.delete(_lockout_key(username))
+    except Exception:
+        pass
+
+    with _lockout_lock:
+        _failed_logins.pop(_normalize_username(username), None)
+
+
+# Crear Blueprint
+auth_bp = Blueprint("auth", __name__, template_folder="../ui/templates")
+
+# ===== Azure AD (Entra ID) Config =====
+AZURE_ENABLED = os.getenv("APP_ENV", "") != "local" and bool(os.getenv("AZURE_CLIENT_ID") and os.getenv("AZURE_CLIENT_ID") != "change-me")
+AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
+AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
+AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
+AZURE_REDIRECT_URI = os.getenv("AZURE_REDIRECT_URI", "http://localhost:5001/api/auth/microsoft/callback")
+AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}" if AZURE_TENANT_ID else ""
+AZURE_SCOPES = ["User.Read"]
+# URL del frontend para redirigir después de login exitoso
+# APP_BASE_URL apunta al frontend (ej: http://localhost:5174)
+# VITE_API_BASE_URL apunta al backend, NO usarlo aquí
+FRONTEND_URL = os.getenv("APP_BASE_URL", "http://localhost:5174")
+
+
+# Handler global para OPTIONS en todos los endpoints de este blueprint
+@auth_bp.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.status_code = 200
+        return response
+
+
+@auth_bp.route("/login", methods=["GET", "POST", "OPTIONS"])
+@limiter.limit(
+    LOGIN_LIMIT,
+    methods=["POST"],
+    key_func=_login_rate_limit_key,
+)  # Solo limitar POST (intentos de login)
+def login():
+    """
+    Login unificado - acepta JSON desde frontend React
+
+    Si es GET: retorna la página de login (para SSR fallback)
+    Si es POST:
+        - Espera JSON con {username, password}
+        - Retorna JSON con {success, user} o error
+    """
+    # Si ya está autenticado y es GET
+    if request.method == "GET" and "usuario_id" in session:
+        usuario = get_user_repository().obtener_por_id(session["usuario_id"])
+        if usuario:
+            # Si es request JSON (desde React), retornar JSON
+            if request.headers.get("Accept") == "application/json":
+                return jsonify(
+                    {
+                        "authenticated": True,
+                        "user": {
+                            "id": usuario.id,
+                            "username": usuario.username,
+                            "rol": usuario.rol.value,
+                            "nombre_completo": usuario.nombre_completo,
+                        },
+                    }
+                ), 200
+            # Si es request HTML (fallback SSR), redirigir
+            return redirect(url_for("socio.index"))
+
+    # GET sin autenticación - retorna página HTML (fallback)
+    if request.method == "GET":
+        return render_template("login.html")
+
+    # POST - manejo de login
+    if request.method == "POST":
+        # Determinar si es JSON o form-data
+        is_json = request.is_json
+
+        if is_json:
+            data = request.get_json() or {}
+            username = _normalize_username(data.get("username", ""))
+            password = data.get("password", "")
+        else:
+            username = _normalize_username(request.form.get("username", ""))
+            password = request.form.get("password", "")
+
+        if not username or not password:
+            response_data = {
+                "success": False,
+                "error": "Username y contraseña son obligatorios",
+            }
+            if is_json:
+                return jsonify(response_data), 400
+            flash("Username y contraseña son obligatorios", "danger")
+            return render_template("login.html")
+
+        # Verificar lockout de cuenta
+        if _check_account_lockout(username):
+            logger.warning(
+                "Lockout activo para usuario=%s ip=%s",
+                _mask_identifier(username),
+                _client_ip(),
+            )
+            response_data = {
+                "success": False,
+                "error": "Cuenta bloqueada temporalmente por demasiados intentos fallidos.",
+            }
+            if is_json:
+                return jsonify(response_data), 429
+            flash(response_data["error"], "danger")
+            return render_template("login.html")
+
+        # Autenticar usuario
+        usuario = get_user_repository().autenticar(username, password)
+
+        if not usuario:
+            _record_failed_login(username)
+            logger.warning(
+                "Login fallido usuario=%s ip=%s",
+                _mask_identifier(username),
+                _client_ip(),
+            )
+            response_data = {"success": False, "error": "Credenciales incorrectas"}
+            if is_json:
+                return jsonify(response_data), 401
+            flash("Credenciales incorrectas", "danger")
+            return render_template("login.html")
+
+        # Login exitoso - limpiar intentos fallidos
+        _clear_failed_logins(username)
+        logger.info(
+            "Login exitoso usuario=%s ip=%s",
+            _mask_identifier(username),
+            _client_ip(),
+        )
+
+        # Actualizar último acceso
+        usuario.ultimo_acceso = datetime.now().isoformat()
+        get_user_repository().guardar(usuario)
+
+        # Crear sesión completa
+        session.clear()  # Evita session fixation
+        session.permanent = True  # Hacer la sesión permanente
+        session["usuario_id"] = usuario.id
+        session["username"] = usuario.username
+        session["rol"] = usuario.rol.value
+        session["nombre_completo"] = usuario.nombre_completo
+        session["auth_time"] = datetime.now().isoformat()
+
+        # Si es JSON (React), retorna user data
+        if is_json:
+            return jsonify(
+                {
+                    "success": True,
+                    "user": {
+                        "id": usuario.id,
+                        "username": usuario.username,
+                        "rol": usuario.rol.value,
+                        "nombre_completo": usuario.nombre_completo,
+                    },
+                }
+            ), 200
+
+        # Si es form-data (SSR fallback), redirige
+        flash(f"¡Bienvenido {usuario.nombre_completo}!", "success")
+        if usuario.es_socio():
+            return redirect(url_for("socio.index"))
+        return redirect(url_for("auth.login"))
+
+
+@auth_bp.route("/api/check-auth", methods=["GET", "OPTIONS"])
+@limiter.limit(POLLING_LIMIT)
+def check_auth():
+    """
+    Endpoint para que React verifique si el usuario está logueado
+
+    Retorna:
+        JSON con {authenticated: boolean, user: {...}}
+    """
+    if "usuario_id" not in session:
+        return jsonify({"authenticated": False, "user": None}), 200
+
+    usuario = get_user_repository().obtener_por_id(session["usuario_id"])
+
+    if not usuario:
+        session.clear()
+        return jsonify({"authenticated": False, "user": None}), 200
+
+    # Construir URL de foto de perfil como data URL (funciona con <img> sin CORS)
+    foto_url = usuario.foto_url or ""
+    if foto_url.startswith("gs://") or foto_url.startswith("https://storage.googleapis.com/"):
+        try:
+            import base64
+            from infrastructure.adapters.gcp_storage import GCPStorage
+            gcs = GCPStorage()
+            # Normalizar a gs:// si viniera como URL pública
+            if foto_url.startswith("https://storage.googleapis.com/"):
+                path_part = foto_url.replace("https://storage.googleapis.com/", "")
+                foto_url = f"gs://{path_part}"
+            # Extraer blob path de gs://bucket/path/to/blob
+            path_without_scheme = foto_url[5:]  # Remove "gs://"
+            parts = path_without_scheme.split("/", 1)
+            if len(parts) >= 2:
+                blob = gcs.bucket.blob(parts[1])
+                image_bytes = blob.download_as_bytes()
+                content_type = blob.content_type or "image/jpeg"
+                encoded = base64.b64encode(image_bytes).decode("utf-8")
+                foto_url = f"data:{content_type};base64,{encoded}"
+            else:
+                foto_url = ""
+        except Exception as e:
+            logger.warning(f"Error cargando foto de perfil: {e}")
+            foto_url = ""
+    
+    return jsonify(
+        {
+            "authenticated": True,
+            "user": {
+                "id": usuario.id,
+                "username": usuario.username,
+                "rol": usuario.rol.value,
+                "nombre": usuario.nombre_completo,
+                "nombre_completo": usuario.nombre_completo,
+                "email": usuario.email,
+                "foto_url": foto_url,
+            },
+        }
+    ), 200
+
+
+@auth_bp.route("/logout", methods=["GET", "POST", "OPTIONS"])
+def logout():
+    """
+    Cierra la sesión del usuario actual
+
+    Si es JSON request, retorna JSON.
+    Si es form request, redirige.
+    """
+    session.clear()
+
+    # Si es JSON request (desde React)
+    if request.is_json or request.headers.get("Accept") == "application/json":
+        return jsonify(
+            {"success": True, "message": "Has cerrado sesión exitosamente"}
+        ), 200
+
+    # Si es request HTML (SSR fallback)
+    flash("Has cerrado sesión exitosamente", "info")
+    return redirect(url_for("auth.login"))
+
+
+@auth_bp.route("/registro/socio", methods=["GET", "POST", "OPTIONS"])
+@limiter.limit(
+    REGISTRO_LIMIT,
+    methods=["POST"],
+    key_func=_register_rate_limit_key,
+)  # Limitar registros
+def registro_socio():
+    """
+    Registro de nuevos usuarios socios
+
+    Acepta JSON desde React o form-data desde SSR
+    """
+    if request.method == "POST":
+        is_json = request.is_json
+
+        if is_json:
+            data = request.get_json() or {}
+            username = _normalize_username(data.get("username", ""))
+            password = data.get("password", "")
+            password_confirm = data.get("password_confirm", "")
+            nombre_completo = data.get("nombre_completo", "").strip()
+            email = _normalize_email(data.get("email", ""))
+        else:
+            username = _normalize_username(request.form.get("username", ""))
+            password = request.form.get("password", "")
+            password_confirm = request.form.get("password_confirm", "")
+            nombre_completo = request.form.get("nombre_completo", "").strip()
+            email = _normalize_email(request.form.get("email", ""))
+
+        # Importar validador
+        from infrastructure.validators import UserValidator
+        
+        # Validaciones básicas
+        if not all([username, password, password_confirm, nombre_completo, email]):
+            error_msg = "Todos los campos son obligatorios"
+            if is_json:
+                return jsonify({"success": False, "error": error_msg}), 400
+            flash(error_msg, "danger")
+            return render_template("registro_socio.html")
+
+        if password != password_confirm:
+            error_msg = "Las contraseñas no coinciden"
+            if is_json:
+                return jsonify({"success": False, "error": error_msg}), 400
+            flash(error_msg, "danger")
+            return render_template("registro_socio.html")
+
+        # Validar todos los campos con el nuevo validador robusto
+        is_valid, validation_errors = UserValidator.validate_all_for_registration(
+            username=username,
+            email=email,
+            password=password,
+            nombre_completo=nombre_completo
+        )
+        
+        if not is_valid:
+            # Tomar el primer error
+            first_error = validation_errors[0]
+            error_msg = first_error.error_message
+            
+            if is_json:
+                return jsonify({
+                    "success": False, 
+                    "error": error_msg,
+                    "field": first_error.field,
+                    "errors": [{"field": e.field, "message": e.error_message} for e in validation_errors]
+                }), 400
+            
+            flash(error_msg, "danger")
+            return render_template("registro_socio.html")
+
+        try:
+            # Crear nuevo usuario
+            nuevo_usuario = Usuario(
+                id=str(uuid.uuid4()),
+                username=UserValidator.normalize_username(username),
+                password_hash=Usuario.hash_password(password),
+                nombre_completo=nombre_completo,
+                email=UserValidator.normalize_email(email),
+                rol=RolUsuario.SOCIO,
+                fecha_creacion=datetime.now().isoformat(),
+                ultimo_acceso=datetime.now().isoformat()
+            )
+
+            # Guardar usuario usando método atómico para prevenir duplicados
+            success, error_msg, usuario_guardado = get_user_repository().guardar_atomic(nuevo_usuario)
+            
+            if not success:
+                logger.warning(
+                    "❌ Registro fallido usuario=%s error=%s ip=%s",
+                    _mask_identifier(username),
+                    error_msg,
+                    _client_ip(),
+                )
+                if is_json:
+                    return jsonify({"success": False, "error": error_msg}), 400
+                flash(error_msg, "danger")
+                return render_template("registro_socio.html")
+            
+            logger.info(
+                "✅ Registro exitoso usuario=%s ip=%s",
+                _mask_identifier(username),
+                _client_ip(),
+            )
+
+            msg_success = "¡Registro exitoso! Ahora puedes iniciar sesión"
+            if is_json:
+                return jsonify({"success": True, "message": msg_success}), 201
+            flash(msg_success, "success")
+            return redirect(url_for("auth.login"))
+
+        except ReglaNegocioException as e:
+            error_msg = f"Error en el registro: {e.mensaje}"
+            if is_json:
+                return jsonify({"success": False, "error": error_msg}), 400
+            flash(error_msg, "danger")
+            return render_template("registro_socio.html")
+        except Exception as e:
+            logger.error(f"❌ Error inesperado en registro: {e}")
+            error_msg = "Error al procesar el registro. Por favor, inténtalo de nuevo."
+            if is_json:
+                return jsonify({"success": False, "error": error_msg}), 500
+            flash(error_msg, "danger")
+            return render_template("registro_socio.html")
+
+    return render_template("registro_socio.html")
+
+
+@auth_bp.route("/perfil")
+def perfil():
+    """
+    Muestra el perfil del usuario actual
+    """
+    if "usuario_id" not in session:
+        flash("Debes iniciar sesión", "warning")
+        return redirect(url_for("auth.login"))
+
+    usuario = get_user_repository().obtener_por_id(session["usuario_id"])
+
+    if not usuario:
+        session.clear()
+        flash("Usuario no encontrado", "danger")
+        return redirect(url_for("auth.login"))
+
+    return render_template("perfil.html", usuario=usuario)
+
+
+# ============================================================
+# Azure AD / Microsoft Entra ID — OAuth2 Authorization Code
+# ============================================================
+
+@auth_bp.route("/api/auth/microsoft/login", methods=["GET", "OPTIONS"])
+def microsoft_login():
+    if not AZURE_ENABLED:
+        return jsonify({"error": "Azure AD deshabilitado en local (APP_ENV=local)"}), 404
+    """
+    Inicia el flujo OAuth2 con Azure AD.
+    Redirige al usuario a la página de login de Microsoft.
+    """
+    if not AZURE_CLIENT_ID or not AZURE_TENANT_ID or not AZURE_CLIENT_SECRET:
+        logger.error("Azure AD no está configurado (faltan variables de entorno)")
+        return jsonify({
+            "success": False,
+            "error": "Autenticación con Microsoft no configurada. Contacta al administrador."
+        }), 503
+
+    try:
+        import msal
+        msal_app = msal.ConfidentialClientApplication(
+            client_id=AZURE_CLIENT_ID,
+            client_credential=AZURE_CLIENT_SECRET,
+            authority=AZURE_AUTHORITY,
+        )
+        # Guardar un estado en sesión para prevenir CSRF
+        import secrets
+        state = secrets.token_urlsafe(32)
+        session["azure_oauth_state"] = state
+
+        auth_url = msal_app.get_authorization_request_url(
+            scopes=AZURE_SCOPES,
+            redirect_uri=AZURE_REDIRECT_URI,
+            state=state,
+        )
+        logger.info("Iniciando login con Microsoft desde ip=%s", _client_ip())
+        return redirect(auth_url)
+
+    except Exception as e:
+        logger.error("Error iniciando login con Microsoft: %s", str(e))
+        return jsonify({"success": False, "error": "Error al conectar con Microsoft"}), 500
+
+
+@auth_bp.route("/api/auth/microsoft/callback", methods=["GET", "OPTIONS"])
+def microsoft_callback():
+    """
+    Callback de Azure AD tras autenticación exitosa.
+    Intercambia el código por tokens, obtiene perfil, crea sesión.
+    """
+    if not AZURE_ENABLED:
+        return jsonify({"error": "Azure AD deshabilitado en local (APP_ENV=local)"}), 404
+    import msal
+    import requests as http_requests
+
+    # Verificar errores de Microsoft
+    error = request.args.get("error")
+    if error:
+        error_description = request.args.get("error_description", "Error desconocido")
+        logger.warning("Azure AD retornó error: %s — %s", error, error_description)
+        frontend_error_url = f"{FRONTEND_URL}/login?error=microsoft_denied"
+        return redirect(frontend_error_url)
+
+    # Verificar código de autorización
+    code = request.args.get("code")
+    if not code:
+        logger.warning("Callback de Microsoft sin código de autorización ip=%s", _client_ip())
+        return redirect(f"{FRONTEND_URL}/login?error=no_code")
+
+    # Verificar state anti-CSRF
+    returned_state = request.args.get("state", "")
+    expected_state = session.pop("azure_oauth_state", None)
+    if not expected_state or returned_state != expected_state:
+        logger.warning("State CSRF inválido en callback de Microsoft ip=%s", _client_ip())
+        return redirect(f"{FRONTEND_URL}/login?error=invalid_state")
+
+    try:
+        # Intercambiar código por token de acceso
+        msal_app = msal.ConfidentialClientApplication(
+            client_id=AZURE_CLIENT_ID,
+            client_credential=AZURE_CLIENT_SECRET,
+            authority=AZURE_AUTHORITY,
+        )
+        token_result = msal_app.acquire_token_by_authorization_code(
+            code=code,
+            scopes=AZURE_SCOPES,
+            redirect_uri=AZURE_REDIRECT_URI,
+        )
+
+        if "error" in token_result:
+            logger.error(
+                "Error obteniendo token de Azure AD: %s — %s",
+                token_result.get("error"),
+                token_result.get("error_description"),
+            )
+            return redirect(f"{FRONTEND_URL}/login?error=token_failed")
+
+        access_token = token_result.get("access_token")
+        if not access_token:
+            logger.error("Token de acceso vacío en respuesta de Azure AD")
+            return redirect(f"{FRONTEND_URL}/login?error=token_empty")
+
+        # Obtener perfil del usuario desde Microsoft Graph
+        graph_response = http_requests.get(
+            "https://graph.microsoft.com/v1.0/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+
+        if not graph_response.ok:
+            logger.error("Error consultando Microsoft Graph: %s", graph_response.status_code)
+            return redirect(f"{FRONTEND_URL}/login?error=graph_failed")
+
+        ms_user = graph_response.json()
+        azure_id = ms_user.get("id", "")
+
+        # Microsoft Graph puede devolver el email en "mail" o en "userPrincipalName".
+        # Para usuarios invitados/externos, "userPrincipalName" tiene el formato:
+        #   usuario_dominio.com#EXT#@tenant.onmicrosoft.com
+        # En ese caso, "mail" tiene el email real. Si "mail" está vacío,
+        # extraemos el email real del UPN antes del token "#EXT#".
+        raw_mail = (ms_user.get("mail") or "").strip()
+        raw_upn = (ms_user.get("userPrincipalName") or "").strip()
+
+        if raw_mail:
+            email = raw_mail.lower()
+        elif "#EXT#" in raw_upn:
+            # Extraer email real: "jean_gmail.com#EXT#@..." → "jean@gmail.com"
+            local_part = raw_upn.split("#EXT#")[0]
+            # El UPN usa _ como separador en lugar de @ en el dominio
+            # Formato: nombre_dominio.com → nombre@dominio.com
+            # Buscamos el último _ que separa usuario de dominio
+            last_underscore = local_part.rfind("_")
+            if last_underscore != -1:
+                email = (local_part[:last_underscore] + "@" + local_part[last_underscore + 1:]).lower()
+            else:
+                email = local_part.lower()
+        else:
+            email = raw_upn.lower()
+
+        nombre_completo = (ms_user.get("displayName") or
+                           f"{ms_user.get('givenName', '')} {ms_user.get('surname', '')}").strip()
+
+        if not email or "@" not in email:
+            logger.error(
+                "Microsoft Graph no retornó email válido. mail=%r upn=%r azure_id=%s",
+                raw_mail, raw_upn, azure_id,
+            )
+            return redirect(f"{FRONTEND_URL}/login?error=no_email")
+
+        logger.info(
+            "Login Microsoft exitoso para email=%s azure_id=%s ip=%s",
+            _mask_identifier(email),
+            azure_id[:8] + "...",
+            _client_ip(),
+        )
+
+        # Buscar o crear usuario en Firestore
+        user_repo = get_user_repository()
+        usuario = user_repo.obtener_por_email(email)
+
+        if usuario:
+            # Usuario existente — actualizar datos de AD y último acceso
+            usuario.ultimo_acceso = datetime.now().isoformat()
+            usuario.azure_id = azure_id
+            usuario.auth_provider = "azure_ad"
+            if nombre_completo and usuario.nombre_completo != nombre_completo:
+                usuario.nombre_completo = nombre_completo
+            user_repo.guardar(usuario)
+            logger.info("Usuario AD existente actualizado: email=%s", _mask_identifier(email))
+        else:
+            # Usuario nuevo — crear automáticamente con rol SOCIO
+            username = email.split("@")[0].replace(".", "_").replace("-", "_").lower()
+            # Asegurar username único
+            base_username = username
+            counter = 1
+            while user_repo.obtener_por_username(username):
+                username = f"{base_username}_{counter}"
+                counter += 1
+
+            usuario = Usuario(
+                id=str(uuid.uuid4()),
+                username=username,
+                nombre_completo=nombre_completo or username,
+                email=email,
+                rol=RolUsuario.SOCIO,
+                password_hash="",          # Sin contraseña local
+                azure_id=azure_id,
+                auth_provider="azure_ad",
+                fecha_creacion=datetime.now().isoformat(),
+                ultimo_acceso=datetime.now().isoformat(),
+            )
+            user_repo.guardar(usuario)
+            logger.info(
+                "Nuevo usuario AD creado: username=%s email=%s",
+                _mask_identifier(username),
+                _mask_identifier(email),
+            )
+
+        # Crear sesión Flask (igual que el login local)
+        session.clear()
+        session.permanent = True
+        session["usuario_id"] = usuario.id
+        session["username"] = usuario.username
+        session["rol"] = usuario.rol.value
+        session["nombre_completo"] = usuario.nombre_completo
+        session["auth_time"] = datetime.now().isoformat()
+        session["auth_provider"] = "azure_ad"
+
+        # Redirigir al frontend (dashboard)
+        return redirect(f"{FRONTEND_URL}/dashboard")
+
+    except Exception as e:
+        logger.error("Error inesperado en callback de Microsoft: %s", str(e), exc_info=True)
+        return redirect(f"{FRONTEND_URL}/login?error=server_error")
+

@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Archivos de desarrollo
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Directorios de datos
+uploads/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# GCP Credentials — NUNCA en la imagen
+gcp-credentials.json
+*-credentials.json
+service-account*.json
+*.json.old
+*.json.backup
+
+# Google Cloud SDK (no necesario en imagen Docker)
+google-cloud-sdk/
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+.docker/
+
+# Documentación
+README.md
+docs/
+*.md
+
+# Testing
+tests/
+test_*.py
+*_test.py
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Archivos temporales
+*.tmp
+*.bak
+*.swp
+.cache/
+
+# Variables de entorno locales
+.env
+.env.local
+.env.*.local
+
+# GCP Credentials — NEVER bake into images
+gcp-credentials.json
+tivit-cu002-*.json
+*.p12
+*.pem
+service-account*.json
+
+# Archivos de sistema
+Thumbs.db

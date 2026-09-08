@@ -1,0 +1,106 @@
+# =============================================
+# TIVIT Video - Dependencies
+# Pinned versions with upper bounds for stability
+# =============================================
+
+# Flask Core
+flask>=3.0.0,<4.0.0
+flask-cors>=6.0.0,<7.0.0
+werkzeug>=3.0.1,<4.0.0
+
+gevent>=24.2.1,<25.0.0
+gevent-websocket>=0.10.1,<1.0.0
+
+# HTTP Client
+requests>=2.31.0,<3.0.0
+
+# Environment Config
+python-dotenv>=1.0.0,<2.0.0
+
+# Response Compression
+flask-compress>=1.14,<2.0.0
+
+# File Type Validation (magic numbers)
+python-magic>=0.4.27,<0.5.0
+
+# =============================================
+# Google Cloud Platform (LEGACY - mantener para compat, no usado en local)
+# =============================================
+google-cloud-storage>=2.14.0,<3.0.0
+google-cloud-videointelligence>=2.11.4,<3.0.0
+google-cloud-firestore>=2.14.0,<3.0.0
+google-cloud-secret-manager>=2.17.0,<3.0.0
+google-cloud-logging>=3.10.0,<4.0.0
+google-cloud-tasks>=2.16.0,<3.0.0
+
+# Speech-to-Text y Natural Language API (LEGACY)
+google-cloud-speech>=2.21.0,<3.0.0
+google-cloud-language>=2.11.0,<3.0.0
+
+# GCP Observability (LEGACY)
+google-cloud-profiler>=4.1.0,<5.0.0
+google-cloud-monitoring>=2.19.0,<3.0.0
+
+# OpenTelemetry (local: OTLP, GCP: gcp-trace)
+opentelemetry-api>=1.24.0,<2.0.0
+opentelemetry-sdk>=1.24.0,<2.0.0
+opentelemetry-exporter-otlp>=1.24.0,<2.0.0
+opentelemetry-exporter-gcp-trace>=1.6.0,<2.0.0
+opentelemetry-instrumentation-flask>=0.45b0
+
+# Google Gemini AI via GenAI SDK (LEGACY - local usa OpenAICompat)
+google-genai>=1.51.0,<2.0.0
+
+# =============================================
+# Local Offline 32B (NUEVO)
+# =============================================
+openai>=1.50.0,<2.0.0
+httpx>=0.27.0,<1.0.0
+boto3>=1.35.0,<2.0.0
+botocore>=1.35.0,<2.0.0
+psycopg2-binary>=2.9.9,<3.0.0
+SQLAlchemy>=2.0.0,<3.0.0
+alembic>=1.13.0,<2.0.0
+pgvector>=0.3.6,<1.0.0
+
+# =============================================
+# Image/Video Processing & Computer Vision (NUEVO)
+# =============================================
+opencv-python-headless>=4.8.1,<5.0.0
+numpy>=1.24.0,<2.0.0
+Pillow>=12.1.1,<13.0.0
+flask-mail>=0.9.1,<1.0.0
+
+# Report Generation
+reportlab>=4.0.0,<5.0.0
+
+# =============================================
+# Security
+# =============================================
+bcrypt>=4.1.2,<5.0.0
+flask-limiter>=3.5.0,<4.0.0
+
+# =============================================
+# Azure AD / Entra ID Authentication
+# =============================================
+msal>=1.28.0,<2.0.0
+
+# =============================================
+# Job Queue (Fase 3 - Mejoras Pipeline v3.0)
+# =============================================
+redis>=5.0.0,<6.0.0
+rq>=1.15.0,<2.0.0
+
+
+
+# =============================================
+# Testing (moved to requirements-dev.txt)
+# Install dev deps: pip install -r requirements-dev.txt
+# =============================================
+
+# =============================================
+# Utilities
+# =============================================
+tenacity>=8.2.0,<9.0.0
+cachetools>=5.3.0,<6.0.0
+

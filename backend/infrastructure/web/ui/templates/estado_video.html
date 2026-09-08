@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consultar Estado - AccessFan</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header tivit-header">
+            <div class="tivit-logo">TIVIT</div>
+            <h1 style="font-size: 2rem; margin-top: 10px;">🎬 AccessFan</h1>
+            <p class="subtitle">Consulta el estado de tus videos</p>
+        </header>
+        
+        <style>
+            .tivit-header {
+                border-bottom: 4px solid #E30613;
+                background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+                border-radius: 12px;
+                padding: 30px !important;
+            }
+            
+            .tivit-logo {
+                font-size: 28px;
+                font-weight: 900;
+                letter-spacing: 2px;
+                color: #E30613;
+                text-shadow: 0 2px 4px rgba(227, 6, 19, 0.3);
+                margin-bottom: 10px;
+            }
+        </style>
+
+        <nav class="nav-tabs">
+            <a href="/" class="nav-tab">📤 Subir Video</a>
+            <a href="/estado-consulta" class="nav-tab active">🔍 Mis Videos</a>
+        </nav>
+
+        <main class="main-content">
+            <!-- Formulario de búsqueda -->
+            <section class="card">
+                <h2>🔎 Buscar mis videos</h2>
+                <form id="buscarForm" class="form">
+                    <div class="form-group">
+                        <label for="usuario">Tu nombre de usuario</label>
+                        <input 
+                            type="text" 
+                            id="usuario" 
+                            name="usuario" 
+                            placeholder="Ingresa el mismo usuario con el que subiste el video"
+                            required
+                        >
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <span class="btn-icon">🔍</span>
+                        Buscar mis videos
+                    </button>
+                </form>
+            </section>
+
+            <!-- Resultados -->
+            <section id="resultados" class="card hidden">
+                <h2>📋 Mis Videos</h2>
+                <div id="videosList" class="videos-list">
+                    <!-- Los videos se cargarán aquí dinámicamente -->
+                </div>
+            </section>
+
+            <!-- Búsqueda por ID -->
+            <section class="card">
+                <h2>🎯 Buscar por ID de video</h2>
+                <form id="buscarIdForm" class="form">
+                    <div class="form-group">
+                        <label for="videoId">ID del video</label>
+                        <input 
+                            type="text" 
+                            id="videoId" 
+                            name="videoId" 
+                            placeholder="Ingresa el ID del video (ej: abc123-def456-...)"
+                        >
+                    </div>
+                    <button type="submit" class="btn btn-secondary">
+                        <span class="btn-icon">🎯</span>
+                        Buscar
+                    </button>
+                </form>
+                <div id="resultadoId" class="resultado-video hidden">
+                    <!-- Resultado de búsqueda por ID -->
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>AccessFan © 2025 - Powered by <strong style="color: #E30613;">TIVIT Latam</strong></p>
+        </footer>
+    </div>
+
+    <script>
+        // Estados con sus iconos y colores
+        const estadosInfo = {
+            'pendiente': { icon: '⏳', color: 'warning', text: 'Pendiente' },
+            'procesando': { icon: '⚙️', color: 'info', text: 'Procesando' },
+            'completado': { icon: '✅', color: 'success', text: 'Completado' },
+            'error': { icon: '❌', color: 'danger', text: 'Rechazado' },
+            'en_revision': { icon: '👁️', color: 'info', text: 'En Revisión' },
+            'aprobado': { icon: '🎉', color: 'success', text: 'Aprobado' },
+            'rechazado': { icon: '🚫', color: 'danger', text: 'Rechazado' }
+        };
+
+        function getEstadoInfo(estado) {
+            return estadosInfo[estado.toLowerCase()] || { icon: '❓', color: 'secondary', text: estado };
+        }
+
+        function renderVideoCard(video) {
+            const info = getEstadoInfo(video.estado);
+            return `
+                <div class="video-card">
+                    <div class="video-card-header">
+                        <span class="video-id">${video.id.substring(0, 8)}...</span>
+                        <span class="badge badge-${info.color}">${info.icon} ${info.text}</span>
+                    </div>
+                    <div class="video-card-body">
+                        <p class="video-descripcion">${video.descripcion || 'Sin descripción'}</p>
+                        <p class="video-estado-desc">${video.descripcion_estado}</p>
+                        ${video.razon_rechazo ? `<p class="video-razon"><strong>Razón:</strong> ${video.razon_rechazo}</p>` : ''}
+                        ${video.fecha_procesamiento ? `<p class="video-fecha">Procesado: ${video.fecha_procesamiento}</p>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Buscar videos por usuario
+        document.getElementById('buscarForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const usuario = document.getElementById('usuario').value.trim();
+            
+            if (!usuario) {
+                alert('Por favor ingresa tu nombre de usuario');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/mis-videos?usuario=${encodeURIComponent(usuario)}`);
+                const data = await response.json();
+
+                const resultadosSection = document.getElementById('resultados');
+                const videosList = document.getElementById('videosList');
+
+                if (data.success && data.videos.length > 0) {
+                    videosList.innerHTML = `
+                        <p class="videos-count">Se encontraron <strong>${data.cantidad}</strong> video(s)</p>
+                        ${data.videos.map(renderVideoCard).join('')}
+                    `;
+                    resultadosSection.classList.remove('hidden');
+                } else if (data.success && data.videos.length === 0) {
+                    videosList.innerHTML = `
+                        <div class="empty-state">
+                            <span class="empty-icon">📭</span>
+                            <p>No se encontraron videos para el usuario "${usuario}"</p>
+                        </div>
+                    `;
+                    resultadosSection.classList.remove('hidden');
+                } else {
+                    alert(data.error || 'Error al buscar videos');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error de conexión al servidor');
+            }
+        });
+
+        // Buscar por ID de video
+        document.getElementById('buscarIdForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const videoId = document.getElementById('videoId').value.trim();
+            
+            if (!videoId) {
+                alert('Por favor ingresa el ID del video');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/video/${encodeURIComponent(videoId)}/estado`);
+                const data = await response.json();
+
+                const resultadoDiv = document.getElementById('resultadoId');
+
+                if (data.success) {
+                    const video = data.video;
+                    resultadoDiv.innerHTML = renderVideoCard(video);
+                    resultadoDiv.classList.remove('hidden');
+                } else {
+                    resultadoDiv.innerHTML = `
+                        <div class="alert alert-danger">
+                            <span class="alert-icon">❌</span>
+                            ${data.error || 'Video no encontrado'}
+                        </div>
+                    `;
+                    resultadoDiv.classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error de conexión al servidor');
+            }
+        });
+    </script>
+</body>
+</html>

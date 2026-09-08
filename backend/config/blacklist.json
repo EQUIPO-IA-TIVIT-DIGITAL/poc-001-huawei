@@ -1,0 +1,58 @@
+{
+  "palabras_prohibidas": [
+    "violencia",
+    "spam",
+    "contenido_ilegal",
+    "drogas",
+    "armas",
+    "odio",
+    "discriminacion",
+    "pirateria",
+    "hackeo",
+    "malware",
+    "sangre",
+    "golpes",
+    "pelea",
+    "muerte",
+    "asesinato",
+    "sexo",
+    "pornografia",
+    "desnudo",
+    "explicito",
+    "gratis",
+    "gana dinero",
+    "click aqui",
+    "link en bio",
+    "oferta limitada",
+    "promocion exclusiva"
+  ],
+  "logos_competidores": [],
+  "logos_competidores_comentario": "NOTA: Logos incidentales en bares, eventos o ropa son NORMALES y ACEPTABLES.",
+  "categorias_prohibidas": {
+    "violencia": ["sangre", "golpes", "pelea", "muerte", "asesinato", "violencia", "guerra", "arma"],
+    "contenido_adulto": ["sexo", "pornografia", "desnudo", "explicito", "adulto"],
+    "sustancias": ["drogas", "tabaco", "cigarrillo", "marihuana", "cocaina"],
+    "ilegal": ["pirateria", "hackeo", "malware", "contenido_ilegal", "armas", "robo", "fraude"],
+    "odio": ["odio", "discriminacion", "racismo", "xenofobia", "nazi", "fascismo"]
+  },
+  "etiquetas_video_intelligence_prohibidas": {
+    "alto_riesgo": ["violence", "weapon", "gun", "knife", "blood", "fight", "war"],
+    "riesgo_moderado": ["smoking", "cigarette", "drug", "gambling"],
+    "requiere_revision": ["protest", "accident", "injury"]
+  },
+  "configuracion": {
+    "duracion_maxima_segundos": 60,
+    "tolerancia_duracion_segundos": 5,
+    "tamano_maximo_mb": 100,
+    "formatos_permitidos": ["mp4", "avi", "mov", "mkv", "webm"],
+    "requiere_revision_humana": true,
+    "umbral_confianza_logo": 0.7,
+    "umbral_confianza_decision": 0.85,
+    "umbral_contenido_explicito": "LIKELY",
+    "permitir_eventos_sociales": true,
+    "permitir_logos_incidentales": true
+  },
+  "version": "4.0",
+  "ultima_actualizacion": "2025-12-23",
+  "notas": "Pipeline optimizado: Gemini Vision PRIMERO + Video Intelligence + Speech-to-Text + Gemini Decisor"
+}

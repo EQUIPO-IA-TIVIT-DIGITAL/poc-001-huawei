@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Panel de Administración AccessFan">
+    <title>AccessFan - Panel de Administración</title>
+    
+    <style>
+        /* Reset y Variables */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --bg-sidebar: #1a1a2e;
+            --bg-input: #2a2a2a;
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --accent-red: #E30613;
+            --accent-red-dark: #C70000;
+            --accent-orange: #FF1F2D;
+            --success-green: #00cc66;
+            --error-red: #E30613;
+            --warning-yellow: #ffaa00;
+            --info-blue: #3399ff;
+            --border-color: #334155;
+            --shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            --tivit-gradient: linear-gradient(135deg, #E30613 0%, #C70000 100%);
+        }
+        
+        /* Body */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        
+        /* Layout Grid Principal */
+        .dashboard-layout {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            min-height: 100vh;
+        }
+        
+        /* Sidebar Fija */
+        .sidebar {
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            padding: 30px 20px;
+            position: fixed;
+            width: 280px;
+            height: 100vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        /* Logo en Sidebar */
+        .sidebar-logo {
+            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .sidebar-logo h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: var(--tivit-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 5px;
+        }
+        
+        .sidebar-logo p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        /* Estadísticas en Sidebar */
+        .stats-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .stats-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: var(--bg-card);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+        
+        .stat-item:hover {
+            border-color: var(--accent-red);
+            transform: translateX(5px);
+        }
+        
+        .stat-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        
+        .stat-value.success {
+            color: var(--success-green);
+        }
+        
+        .stat-value.error {
+            color: var(--error-red);
+        }
+        
+        .stat-value.warning {
+            color: var(--warning-yellow);
+        }
+        
+        /* Navegación */
+        .nav-menu {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .nav-item {
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .nav-item:hover, .nav-item.active {
+            background: var(--tivit-gradient);
+            color: var(--text-primary);
+            border-color: var(--accent-red);
+            transform: translateX(5px);
+        }
+        
+        /* Área de Contenido Principal */
+        .main-content {
+            grid-column: 2;
+            padding: 30px;
+            margin-left: 280px;
+        }
+        
+        /* Header del Dashboard */
+        .dashboard-header {
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        
+        .dashboard-header h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .dashboard-header p {
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }
+        
+        /* Filtros */
+        .filters {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 10px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--accent-red);
+            color: var(--text-primary);
+            border-color: var(--accent-red);
+        }
+        
+        /* Grid de Videos */
+        .videos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 24px;
+            margin-bottom: 30px;
+        }
+        
+        /* Tarjeta de Video */
+        .video-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        
+        .video-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 24px rgba(227, 6, 19, 0.3);
+            border-color: var(--accent-red);
+        }
+        
+        /* Header de la Tarjeta */
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        
+        .video-id {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+        
+        /* Badges CSS Puro */
+        .badge {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            display: inline-block;
+        }
+        
+        .badge.aprobado {
+            background: rgba(0, 204, 102, 0.15);
+            color: var(--success-green);
+            border: 1px solid var(--success-green);
+        }
+        
+        .badge.rechazado {
+            background: rgba(255, 51, 51, 0.15);
+            color: var(--error-red);
+            border: 1px solid var(--error-red);
+        }
+        
+        .badge.pendiente {
+            background: rgba(255, 170, 0, 0.15);
+            color: var(--warning-yellow);
+            border: 1px solid var(--warning-yellow);
+        }
+        
+        .badge.procesando {
+            background: rgba(51, 153, 255, 0.15);
+            color: var(--info-blue);
+            border: 1px solid var(--info-blue);
+        }
+        
+        .badge.error {
+            background: rgba(255, 51, 51, 0.15);
+            color: var(--error-red);
+            border: 1px solid var(--error-red);
+        }
+        
+        /* Contenido de la Tarjeta */
+        .card-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .video-usuario {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .video-usuario::before {
+            content: "👤";
+            font-size: 1.2rem;
+        }
+        
+        .video-descripcion {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            max-height: 60px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+        }
+        
+        /* Footer de la Tarjeta */
+        .card-footer {
+            display: flex;
+            gap: 16px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .card-meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .card-meta-icon {
+            font-size: 1rem;
+        }
+        
+        /* Detalles adicionales */
+        .video-details {
+            background: var(--bg-input);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 0.85rem;
+            display: none;
+        }
+        
+        .video-details.show {
+            display: block;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+        
+        .detail-label {
+            color: var(--text-secondary);
+        }
+        
+        .detail-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }
+        
+        .empty-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+        }
+        
+        .empty-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+        
+        /* Loader */
+        .loader {
+            display: none;
+            width: 50px;
+            height: 50px;
+            border: 5px solid var(--bg-input);
+            border-top: 5px solid var(--accent-red);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 60px auto;
+        }
+        
+        .loader.show {
+            display: block;
+        }
+        
+        /* Animations */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .video-card {
+            animation: fadeIn 0.4s ease;
+        }
+        
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .dashboard-layout {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                position: relative;
+                width: 100%;
+                height: auto;
+            }
+            
+            .main-content {
+                margin-left: 0;
+            }
+            
+            .videos-grid {
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            }
+        }
+        
+        @media (max-width: 640px) {
+            .videos-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Layout Grid Principal -->
+    <div class="dashboard-layout">
+        <!-- Sidebar Fija -->
+        <aside class="sidebar">
+            <!-- Logo -->
+            <div class="sidebar-logo">
+                <div style="font-size: 24px; font-weight: 900; letter-spacing: 2px; color: #E30613; margin-bottom: 8px;">TIVIT</div>
+                <h1>AccessFan</h1>
+                <p>Panel de Administración</p>
+            </div>
+            
+            <!-- Navegación -->
+            <nav class="nav-menu">
+                <a href="/admin" class="nav-item active">
+                    <span>📊</span> Dashboard
+                </a>
+                <a href="/" class="nav-item">
+                    <span>📤</span> Subir Video
+                </a>
+            </nav>
+            
+            <!-- Estadísticas -->
+            <div class="stats-container">
+                <h3 class="stats-title">Estadísticas</h3>
+                <div class="stat-item">
+                    <span class="stat-label">Total Videos</span>
+                    <span class="stat-value" id="stat-total">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Aprobados</span>
+                    <span class="stat-value success" id="stat-aprobados">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Rechazados</span>
+                    <span class="stat-value error" id="stat-rechazados">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Pendientes</span>
+                    <span class="stat-value warning" id="stat-pendientes">0</span>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Contenido Principal -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="dashboard-header">
+                <div>
+                    <h2>Videos Procesados</h2>
+                    <p>Gestiona y visualiza todos los videos del sistema</p>
+                </div>
+                <div style="text-align: right;">
+                    <p style="margin: 0; color: var(--text-secondary); font-size: 0.9rem;">
+                        Bienvenido, <strong style="color: var(--text-primary);">{{ admin }}</strong>
+                    </p>
+                    <a href="{{ url_for('auth.logout') }}" style="color: var(--accent-red); text-decoration: none; font-size: 0.9rem; font-weight: 600;">Cerrar Sesión</a>
+                </div>
+            </header>
+            
+            <!-- Filtros -->
+            <div class="filters">
+                <button class="filter-btn active" data-filter="todos">Todos</button>
+                <button class="filter-btn" data-filter="aprobados">Aprobados</button>
+                <button class="filter-btn" data-filter="rechazados">Rechazados</button>
+                <button class="filter-btn" data-filter="en_revision">🔍 En Revisión</button>
+                <button class="filter-btn" data-filter="pendientes">Pendientes</button>
+            </div>
+            
+            <!-- Loader -->
+            <div id="loader" class="loader show"></div>
+            
+            <!-- Grid de Videos -->
+            <div id="videosGrid" class="videos-grid"></div>
+            
+            <!-- Empty State -->
+            <div id="emptyState" class="empty-state" style="display: none;">
+                <div class="empty-icon">📹</div>
+                <h3 class="empty-title">No hay videos</h3>
+                <p>Comienza subiendo tu primer video desde el formulario de carga</p>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Modal de Rechazo -->
+    <div id="modalRechazo" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center;">
+        <div style="background: var(--bg-card); padding: 30px; border-radius: 12px; max-width: 500px; width: 90%; border: 1px solid var(--border-color);">
+            <h3 style="margin-bottom: 20px; color: var(--text-primary);">❌ Rechazar Video</h3>
+            <p style="color: var(--text-secondary); margin-bottom: 16px;">Por favor, indica el motivo del rechazo:</p>
+            <textarea id="razonRechazo" 
+                      placeholder="Escribe la razón del rechazo..."
+                      style="width: 100%; height: 120px; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-primary); resize: vertical; font-family: inherit;"></textarea>
+            <div style="display: flex; gap: 12px; margin-top: 20px; justify-content: flex-end;">
+                <button onclick="cerrarModalRechazo()" 
+                        style="padding: 10px 24px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Cancelar
+                </button>
+                <button onclick="confirmarRechazo()" 
+                        style="padding: 10px 24px; background: var(--error-red); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                    Confirmar Rechazo
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <style>
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes fadeOut {
+            from { opacity: 1; }
+            to { opacity: 0; }
+        }
+        .btn-action:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+    </style>
+    
+    <script>
+        // Estado global
+        let todosLosVideos = [];
+        let filtroActual = 'todos';
+        
+        // Cargar videos al iniciar
+        document.addEventListener('DOMContentLoaded', () => {
+            cargarVideos();
+            configurarFiltros();
+        });
+        
+        // Función para cargar videos desde la API
+        async function cargarVideos() {
+            const loader = document.getElementById('loader');
+            const videosGrid = document.getElementById('videosGrid');
+            const emptyState = document.getElementById('emptyState');
+            
+            try {
+                loader.classList.add('show');
+                videosGrid.innerHTML = '';
+                
+                const response = await fetch('/api/admin/videos');
+                const data = await response.json();
+                
+                if (data.success) {
+                    todosLosVideos = data.videos;
+                    actualizarEstadisticas(data.estadisticas);
+                    mostrarVideos(filtroActual);
+                } else {
+                    console.error('Error al cargar videos:', data.error);
+                }
+                
+            } catch (error) {
+                console.error('Error de red:', error);
+            } finally {
+                loader.classList.remove('show');
+            }
+        }
+        
+        // Actualizar estadísticas en el sidebar
+        function actualizarEstadisticas(stats) {
+            document.getElementById('stat-total').textContent = stats.total;
+            document.getElementById('stat-aprobados').textContent = stats.aprobados;
+            document.getElementById('stat-rechazados').textContent = stats.rechazados;
+            document.getElementById('stat-pendientes').textContent = stats.pendientes;
+        }
+        
+        // Mostrar videos según el filtro
+        function mostrarVideos(filtro) {
+            const videosGrid = document.getElementById('videosGrid');
+            const emptyState = document.getElementById('emptyState');
+            
+            let videosFiltrados = todosLosVideos;
+            
+            // Aplicar filtro
+            if (filtro === 'aprobados') {
+                videosFiltrados = todosLosVideos.filter(v => v.resultado_ia === 'APROBADO');
+            } else if (filtro === 'rechazados') {
+                videosFiltrados = todosLosVideos.filter(v => v.resultado_ia === 'RECHAZADO_IA' || v.resultado_ia === 'RECHAZADO_DURACION');
+            } else if (filtro === 'en_revision') {
+                videosFiltrados = todosLosVideos.filter(v => v.estado === 'en_revision' || v.resultado_ia === 'EN_REVISION');
+            } else if (filtro === 'pendientes') {
+                videosFiltrados = todosLosVideos.filter(v => v.estado === 'pendiente' || v.estado === 'procesando');
+            }
+            
+            // Mostrar/ocultar empty state
+            if (videosFiltrados.length === 0) {
+                videosGrid.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+            
+            videosGrid.style.display = 'grid';
+            emptyState.style.display = 'none';
+            
+            // Renderizar tarjetas
+            videosGrid.innerHTML = videosFiltrados.map(video => crearTarjetaVideo(video)).join('');
+        }
+        
+        // Crear HTML de tarjeta de video
+        function crearTarjetaVideo(video) {
+            const badge = obtenerBadge(video);
+            const duracion = video.duracion_segundos ? `${video.duracion_segundos}s` : 'N/A';
+            const fecha = video.fecha_procesamiento ? 
+                new Date(video.fecha_procesamiento).toLocaleString('es-ES') : 'N/A';
+            
+            let detallesAdicionales = '';
+            let botonesAccion = '';
+            
+            // Mostrar análisis de IA si está disponible
+            if (video.analisis_ia) {
+                const colorAnalisis = video.resultado_ia === 'APROBADO' ? 'var(--success-green)' : 'var(--error-red)';
+                const bgAnalisis = video.resultado_ia === 'APROBADO' ? 'rgba(0, 204, 102, 0.1)' : 'rgba(255, 51, 51, 0.1)';
+                detallesAdicionales += `
+                    <div style="margin-top: 12px; padding: 10px; background: ${bgAnalisis}; border-radius: 6px; border-left: 3px solid ${colorAnalisis};">
+                        <strong style="color: ${colorAnalisis};">🤖 Análisis de IA:</strong><br>
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">${video.analisis_ia}</span>
+                    </div>
+                `;
+            }
+            
+            if (video.razon_rechazo) {
+                detallesAdicionales += `
+                    <div style="margin-top: 12px; padding: 10px; background: rgba(255, 51, 51, 0.1); border-radius: 6px; border-left: 3px solid var(--error-red);">
+                        <strong style="color: var(--error-red);">❌ Motivo de rechazo:</strong><br>
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">${video.razon_rechazo}</span>
+                    </div>
+                `;
+            }
+            
+            // Mostrar botones de acción para videos en revisión
+            if (video.estado === 'en_revision' || video.resultado_ia === 'EN_REVISION') {
+                botonesAccion = `
+                    <div class="action-buttons" style="margin-top: 16px; display: flex; gap: 10px;">
+                        <button onclick="aprobarVideo('${video.id}')" 
+                                class="btn-action btn-aprobar"
+                                style="flex: 1; padding: 10px; background: var(--success-green); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">
+                            ✓ Aprobar
+                        </button>
+                        <button onclick="abrirModalRechazo('${video.id}')" 
+                                class="btn-action btn-rechazar"
+                                style="flex: 1; padding: 10px; background: var(--error-red); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.3s;">
+                            ✗ Rechazar
+                        </button>
+                    </div>
+                `;
+            }
+
+            return `
+                <article class="video-card">
+                    <div class="card-header">
+                        <div class="video-id">ID: ${video.id.substring(0, 12)}...</div>
+                        ${badge}
+                    </div>
+                    
+                    <div class="card-content">
+                        <div class="video-usuario">${video.usuario}</div>
+                        <div class="video-descripcion">${video.descripcion}</div>
+                        ${detallesAdicionales}
+                        ${botonesAccion}
+                    </div>
+                    
+                    <div class="card-footer">
+                        <div class="card-meta">
+                            <span class="card-meta-icon">⏱️</span>
+                            <span>${duracion}</span>
+                        </div>
+                        <div class="card-meta">
+                            <span class="card-meta-icon">📅</span>
+                            <span>${fecha.split(',')[0]}</span>
+                        </div>
+                    </div>
+                </article>
+            `;
+        }
+        
+        // Obtener badge según estado y resultado
+        function obtenerBadge(video) {
+            if (video.resultado_ia === 'APROBADO') {
+                return '<span class="badge aprobado">✓ Aprobado</span>';
+            } else if (video.resultado_ia === 'RECHAZADO_IA' || video.resultado_ia === 'RECHAZADO_DURACION') {
+                return '<span class="badge rechazado">✗ Rechazado</span>';
+            } else if (video.estado === 'en_revision' || video.resultado_ia === 'EN_REVISION') {
+                return '<span class="badge en-revision" style="background: linear-gradient(135deg, #FF6B35 0%, #F7C59F 100%);">🔍 En Revisión</span>';
+            } else if (video.estado === 'procesando') {
+                return '<span class="badge procesando">⟳ Procesando</span>';
+            } else if (video.estado === 'pendiente') {
+                return '<span class="badge pendiente">⋯ Pendiente</span>';
+            } else if (video.estado === 'error') {
+                return '<span class="badge error">! Error</span>';
+            }
+            return '<span class="badge pendiente">Desconocido</span>';
+        }
+        
+        // === FUNCIONES DE REVISIÓN MANUAL ===
+        
+        // Aprobar video
+        async function aprobarVideo(videoId) {
+            if (!confirm('¿Estás seguro de aprobar este video?')) return;
+            
+            try {
+                const response = await fetch(`/api/admin/videos/${videoId}/aprobar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ comentario: 'Aprobado manualmente por admin' })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    mostrarNotificacion('✅ Video aprobado correctamente', 'success');
+                    cargarVideos(); // Recargar lista
+                } else {
+                    mostrarNotificacion('❌ Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                mostrarNotificacion('❌ Error de conexión', 'error');
+            }
+        }
+        
+        // Variable para el modal
+        let videoIdRechazar = null;
+        
+        // Abrir modal de rechazo
+        function abrirModalRechazo(videoId) {
+            videoIdRechazar = videoId;
+            document.getElementById('modalRechazo').style.display = 'flex';
+            document.getElementById('razonRechazo').value = '';
+            document.getElementById('razonRechazo').focus();
+        }
+        
+        // Cerrar modal de rechazo
+        function cerrarModalRechazo() {
+            document.getElementById('modalRechazo').style.display = 'none';
+            videoIdRechazar = null;
+        }
+        
+        // Confirmar rechazo
+        async function confirmarRechazo() {
+            const razon = document.getElementById('razonRechazo').value.trim();
+            
+            if (!razon) {
+                alert('Debes proporcionar una razón para el rechazo');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/admin/videos/${videoIdRechazar}/rechazar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ razon: razon })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    cerrarModalRechazo();
+                    mostrarNotificacion('✅ Video rechazado correctamente', 'success');
+                    cargarVideos(); // Recargar lista
+                } else {
+                    mostrarNotificacion('❌ Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                mostrarNotificacion('❌ Error de conexión', 'error');
+            }
+        }
+        
+        // Mostrar notificación
+        function mostrarNotificacion(mensaje, tipo) {
+            const notif = document.createElement('div');
+            notif.className = `notificacion notif-${tipo}`;
+            notif.innerHTML = mensaje;
+            notif.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                padding: 16px 24px;
+                border-radius: 8px;
+                color: white;
+                font-weight: 600;
+                z-index: 10000;
+                animation: slideIn 0.3s ease;
+                background: ${tipo === 'success' ? 'var(--success-green)' : 'var(--error-red)'};
+            `;
+            
+            document.body.appendChild(notif);
+            
+            setTimeout(() => {
+                notif.style.animation = 'fadeOut 0.3s ease';
+                setTimeout(() => notif.remove(), 300);
+            }, 3000);
+        }
+        
+        // Configurar botones de filtro
+        function configurarFiltros() {
+            const filterBtns = document.querySelectorAll('.filter-btn');
+            
+            filterBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    // Actualizar botón activo
+                    filterBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    
+                    // Aplicar filtro
+                    filtroActual = btn.dataset.filter;
+                    mostrarVideos(filtroActual);
+                });
+            });
+        }
+        
+        // Recargar cada 10 segundos
+        setInterval(cargarVideos, 10000);
+    </script>
+</body>
+</html>

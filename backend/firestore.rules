@@ -1,0 +1,213 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // FUNCIONES AUXILIARES
+    // ============================================
+    
+    // Verifica si el usuario está autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Verifica si es el dueño del recurso
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Verifica formato de email
+    function isValidEmail(email) {
+      return email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+    
+    // Verifica formato de username
+    function isValidUsername(username) {
+      return username.matches('^[a-zA-Z0-9_.-]{3,30}$') 
+        && username.size() >= 3 
+        && username.size() <= 30;
+    }
+    
+    // Verifica que los campos obligatorios estén presentes
+    function hasRequiredUserFields() {
+      return request.resource.data.keys().hasAll([
+        'id', 'username', 'username_normalized', 
+        'email', 'email_normalized', 'password_hash', 
+        'nombre_completo', 'rol', 'activo'
+      ]);
+    }
+    
+    // ============================================
+    // REGLAS PARA SOCIOS (USUARIOS)
+    // ============================================
+    
+    match /socios/{username} {
+      // Lectura: Solo usuarios autenticados pueden leer su propio perfil
+      allow read: if isAuthenticated() && 
+        (request.auth.token.username == username || 
+         request.auth.token.rol == 'admin');
+      
+      // Creación: Cualquiera puede crear (registro público)
+      // pero con validaciones estrictas
+      allow create: if 
+        // Validar formato de username
+        isValidUsername(request.resource.data.username) &&
+        // El username del documento debe coincidir con el campo username
+        username == request.resource.data.username &&
+        // El username_normalized debe ser lowercase
+        request.resource.data.username_normalized == request.resource.data.username.lower() &&
+        // Validar formato de email
+        isValidEmail(request.resource.data.email) &&
+        // El email_normalized debe ser lowercase
+        request.resource.data.email_normalized == request.resource.data.email.lower() &&
+        // Verificar campos obligatorios
+        hasRequiredUserFields() &&
+        // El rol debe ser 'socio' para nuevos registros
+        request.resource.data.rol == 'socio' &&
+        // Debe estar activo por defecto
+        request.resource.data.activo == true &&
+        // El nombre completo debe tener al menos 2 caracteres
+        request.resource.data.nombre_completo.size() >= 2 &&
+        request.resource.data.nombre_completo.size() <= 100 &&
+        // El password_hash no debe estar vacío
+        request.resource.data.password_hash.size() > 0;
+      
+      // Actualización: Solo el propio usuario puede actualizar su perfil
+      allow update: if isAuthenticated() && 
+        request.auth.token.username == username &&
+        // No puede cambiar username (es la clave)
+        request.resource.data.username == resource.data.username &&
+        // No puede cambiar el ID
+        request.resource.data.id == resource.data.id &&
+        // No puede cambiar el rol a sí mismo
+        request.resource.data.rol == resource.data.rol;
+      
+      // Eliminación: Solo admins pueden eliminar usuarios
+      allow delete: if isAuthenticated() && 
+        request.auth.token.rol == 'admin';
+    }
+    
+    // ============================================
+    // REGLAS PARA VIDEOS
+    // ============================================
+    
+    match /videos/{videoId} {
+      // Lectura: Solo el propietario del video
+      allow read: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+      
+      // Creación: Usuario autenticado, debe ser el propietario
+      allow create: if isAuthenticated() && 
+        request.resource.data.usuario == request.auth.token.username &&
+        request.resource.data.id == videoId;
+      
+      // Actualización: Solo el propietario
+      allow update: if isAuthenticated() && 
+        resource.data.usuario == request.auth.token.username;
+      
+      // Eliminación: Solo el propietario
+      allow delete: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+    }
+    
+    // ============================================
+    // REGLAS PARA WORKSPACES
+    // ============================================
+    
+    match /workspaces/{workspaceId} {
+      // Lectura: Solo el propietario
+      allow read: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+      
+      // Creación: Usuario autenticado
+      allow create: if isAuthenticated() && 
+        request.resource.data.usuario == request.auth.token.username;
+      
+      // Actualización: Solo el propietario
+      allow update: if isAuthenticated() && 
+        resource.data.usuario == request.auth.token.username;
+      
+      // Eliminación: Solo el propietario
+      allow delete: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+    }
+    
+    // ============================================
+    // REGLAS PARA SECURITY VIDEOS
+    // ============================================
+    
+    match /security_videos/{videoId} {
+      // Lectura: Solo el propietario
+      allow read: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+      
+      // Creación: Usuario autenticado
+      allow create: if isAuthenticated() && 
+        request.resource.data.usuario == request.auth.token.username;
+      
+      // Actualización: Solo el propietario
+      allow update: if isAuthenticated() && 
+        resource.data.usuario == request.auth.token.username;
+      
+      // Eliminación: Solo el propietario
+      allow delete: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+    }
+    
+    // ============================================
+    // REGLAS PARA OPERATIONAL ANALYSES
+    // ============================================
+    
+    match /operational_analyses/{analysisId} {
+      // Lectura: Solo el propietario
+      allow read: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+      
+      // Creación: Usuario autenticado
+      allow create: if isAuthenticated() && 
+        request.resource.data.usuario == request.auth.token.username;
+      
+      // Actualización: Solo el propietario
+      allow update: if isAuthenticated() && 
+        resource.data.usuario == request.auth.token.username;
+      
+      // Eliminación: Solo el propietario
+      allow delete: if isAuthenticated() && 
+        (resource.data.usuario == request.auth.token.username ||
+         request.auth.token.rol == 'admin');
+      
+      // Sub-colección de eventos
+      match /events/{eventId} {
+        allow read, write: if isAuthenticated() && 
+          get(/databases/$(database)/documents/operational_analyses/$(analysisId)).data.usuario == request.auth.token.username;
+      }
+    }
+    
+    // ============================================
+    // REGLAS PARA OPERATIONAL EVENTS
+    // ============================================
+    
+    match /operational_events/{eventId} {
+      // Lectura: Solo si tiene acceso al análisis padre
+      allow read: if isAuthenticated();
+      
+      // Escritura: Solo el sistema/backend
+      allow write: if false;  // Solo desde backend autenticado
+    }
+    
+    // ============================================
+    // REGLAS POR DEFECTO - DENEGAR TODO LO DEMÁS
+    // ============================================
+    
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro - AccessFan | TIVIT</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #E30613 0%, #8B0000 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .registro-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            overflow: hidden;
+            width: 100%;
+            max-width: 480px;
+        }
+
+        .registro-header {
+            background: linear-gradient(135deg, #E30613 0%, #C70000 100%);
+            color: white;
+            padding: 45px 30px;
+            text-align: center;
+            position: relative;
+        }
+
+        .registro-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: white;
+        }
+
+        .logo-container {
+            margin-bottom: 12px;
+        }
+
+        .logo-text {
+            font-size: 32px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .registro-header h1 {
+            font-size: 24px;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .registro-header p {
+            font-size: 13px;
+            opacity: 0.95;
+            font-weight: 300;
+        }
+
+        .registro-body {
+            padding: 40px 35px;
+        }
+
+        .form-group {
+            margin-bottom: 22px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 13px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #E30613;
+            box-shadow: 0 0 0 3px rgba(227, 6, 19, 0.1);
+        }
+
+        .btn-registro {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #E30613 0%, #C70000 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 15px rgba(227, 6, 19, 0.3);
+        }
+
+        .btn-registro:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(227, 6, 19, 0.5);
+        }
+
+        .btn-registro:active {
+            transform: translateY(0);
+        }
+
+        .alert {
+            padding: 14px 16px;
+            border-radius: 10px;
+            margin-bottom: 25px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .alert-danger {
+            background-color: #ffe6e6;
+            color: #c70000;
+            border-left: 4px solid #E30613;
+        }
+
+        .alert-success {
+            background-color: #e6f4ea;
+            color: #1e7e34;
+            border-left: 4px solid #28a745;
+        }
+
+        .links {
+            margin-top: 25px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .links a {
+            color: #E30613;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .links a:hover {
+            color: #C70000;
+            text-decoration: underline;
+        }
+
+        .footer-text {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .footer-text strong {
+            color: #E30613;
+        }
+    </style>
+</head>
+<body>
+    <div class="registro-container">
+        <div class="registro-header">
+            <div class="logo-container">
+                <div class="logo-text">TIVIT</div>
+            </div>
+            <h1>🎬 AccessFan</h1>
+            <p>Registro de Nuevo Usuario</p>
+        </div>
+        
+        <div class="registro-body">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <form method="POST" action="{{ url_for('auth.registro_socio') }}">
+                <div class="form-group">
+                    <label for="nombre_completo">Nombre Completo</label>
+                    <input type="text" id="nombre_completo" name="nombre_completo" required placeholder="Ej: Juan Pérez">
+                </div>
+
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" required placeholder="tu@email.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="username">Usuario</label>
+                    <input type="text" id="username" name="username" required placeholder="Elige un nombre de usuario">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Contraseña</label>
+                    <input type="password" id="password" name="password" required placeholder="Mínimo 6 caracteres">
+                </div>
+
+                <div class="form-group">
+                    <label for="password_confirm">Confirmar Contraseña</label>
+                    <input type="password" id="password_confirm" name="password_confirm" required placeholder="Repite tu contraseña">
+                </div>
+
+                <button type="submit" class="btn-registro">Registrarse</button>
+            </form>
+
+            <div class="links">
+                ¿Ya tienes cuenta? <a href="{{ url_for('auth.login') }}">Inicia sesión aquí</a>
+            </div>
+
+            <div class="footer-text">
+                Powered by <strong>TIVIT Latam</strong>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
