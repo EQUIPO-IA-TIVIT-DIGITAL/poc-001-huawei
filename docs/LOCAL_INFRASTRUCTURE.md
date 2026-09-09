@@ -41,7 +41,7 @@ El frontend queda en `http://localhost:5173`, el backend en `http://localhost:50
 ## Persistencia
 
 - PostgreSQL crea las tablas del modelo SQLAlchemy durante el arranque. Las migraciones Alembic cubren actualizaciones de instalaciones existentes.
-- MinIO crea los buckets locales mediante el servicio `minio-setup`.
+- MinIO crea el bucket principal de forma idempotente desde el adapter al arrancar el backend. El servicio `minio-setup` es opcional (perfil `setup`) y solo crea buckets adicionales o reglas de ciclo de vida.
 - Redis respalda las colas RQ y el estado temporal de trabajos.
 - Los videos se identifican con URIs `s3://` o rutas `file://`; las respuestas HTTP usan `storage_path`, `storage_uri`, `video_url`, `audio_url` y `full_transcription_url`.
 

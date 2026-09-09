@@ -170,5 +170,5 @@ See [API.md](API.md) for full request/response documentation.
 
 ---
 
-**Last Updated**: May 15, 2026  
-**Version**: 3.3.0
+**Last Updated**: September 9, 2026  
+**Version**: 1.0.0

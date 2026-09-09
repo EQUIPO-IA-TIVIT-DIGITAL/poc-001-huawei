@@ -14,7 +14,7 @@ All endpoints return JSON. Authentication is enforced by server-side session coo
 
 ## Authentication
 
-### POST /api/auth/login
+### POST /login
 
 Authenticates a user and establishes a session.
 
@@ -39,7 +39,7 @@ Account lockout activates after 5 failed attempts within 5 minutes (15-minute lo
 
 ---
 
-### POST /api/auth/logout
+### POST /logout
 
 Destroys the current session.
 
@@ -47,7 +47,7 @@ Destroys the current session.
 
 ---
 
-### POST /api/auth/register
+### POST /registro/socio
 
 Registers a new user account.
 
@@ -151,7 +151,7 @@ The backend streams object content in 1 MB chunks. The `video_url` field returne
 
 ---
 
-### GET /video/:video_id/status
+### GET /socio/video/:video_id/status
 
 Polls the processing status of a video.
 
@@ -167,7 +167,7 @@ Polls the processing status of a video.
 
 ---
 
-### POST /video/:video_id/cancel
+### POST /socio/video/:video_id/cancel
 
 Requests cancellation of an active processing job.
 
@@ -242,7 +242,7 @@ Deletes a security video and its associated events and stored objects.
 
 ---
 
-### GET /api/security/videos/:video_id/events
+### GET /api/security/videos/:video_id/eventos
 
 Returns the indexed events extracted from the video.
 
@@ -273,7 +273,7 @@ Queries the indexed events using natural language.
 
 ---
 
-### POST /api/security/process (internal)
+### POST /api/security/process-worker (internal)
 
 Worker callback endpoint. Requires `X-Internal-Worker-Token` header.
 

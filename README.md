@@ -174,15 +174,15 @@ npm run build
 
 ```bash
 # Clone the repository
-git clone https://codeberg.org/mjaliaga/CU002.git
-cd CU002
+git clone https://github.com/EQUIPO-IA-TIVIT-DIGITAL/poc-001-huawei.git
+cd poc-001-huawei
 
 # Copy and configure environment variables
 cp .env.example .env
 # Edit .env and fill in the required values
 
-# Start all services
-docker compose up -d
+# Start the full local stack (PostgreSQL + pgvector, MinIO, Redis, backend, worker, frontend)
+docker compose -f docker-compose.local.yml up -d --build
 ```
 
 ### Development Services
