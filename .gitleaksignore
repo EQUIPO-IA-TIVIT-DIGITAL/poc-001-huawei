@@ -1,0 +1,5 @@
+# Falsos positivos: valor por defecto de variable de entorno (no es un secreto)
+180c32b297d58bcee5c1b931151841a2fa5ae4df:backend/config/app_config.py:generic-api-key:58
+
+# Falsos positivos: IDs de GCP Secret Manager (nombres de secretos, no valores)
+180c32b297d58bcee5c1b931151841a2fa5ae4df:backend/infrastructure/services/secret_manager.py:generic-api-key:19
