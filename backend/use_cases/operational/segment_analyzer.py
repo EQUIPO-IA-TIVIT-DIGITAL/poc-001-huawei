@@ -13,7 +13,7 @@ from infrastructure.adapters.gemini_operational_prompts import build_segment_pro
 logger = logging.getLogger(__name__)
 
 class OperationalSegmentAnalyzer:
-    """Fase 2: Análisis por segmento usando Gemini 2.5 con paralelismo y retry"""
+    """Fase 2: Análisis por segmento usando la IA local con paralelismo y retry"""
     
     GEMINI_MAX_RETRIES = 3
     GEMINI_RETRY_DELAYS = [5, 15, 30]
@@ -75,23 +75,22 @@ class OperationalSegmentAnalyzer:
                     logger.warning(f"[{vid}]    ⚠️ No se pudo extraer clip, saltando segmento")
                     return result
 
-                # 1.5. Intentar subir el clip a GCS para pasarlo como gs:// URI a Gemini.
-                # Vertex AI consume el video directamente desde GCS sin serializar frames
+                # Intentar subir el clip al almacenamiento para pasarlo a la IA local.
+                # El analizador consume el video directamente desde el almacenamiento sin serializar frames
                 # como base64 (~33% overhead), lo que reduce el payload y el uso de tokens.
-                # Si GCS no está disponible se usa frames base64 como fallback.
-                gcs_clip_uri = None
+                # Si el almacenamiento no está disponible se usan frames base64 como fallback.
+                storage_clip_uri = None
                 if self.storage_adapter and self.storage_adapter.is_available():
                     tmp_blob = f"operational/tmp_clips/{analysis.id}/clip_{idx:04d}.mp4"
-                    gcs_clip_uri = self.storage_adapter.upload_file(
+                    storage_clip_uri = self.storage_adapter.upload_file(
                         clip_path, tmp_blob, content_type="video/mp4"
                     )
-                    if gcs_clip_uri:
-                        logger.info(f"[{vid}]    ☁️ Clip subido a GCS: {tmp_blob}")
+                    if storage_clip_uri:
+                        logger.info(f"[{vid}]    ☁️ Clip subido al almacenamiento: {tmp_blob}")
                     else:
-                        logger.warning(f"[{vid}]    ⚠️ No se pudo subir clip a GCS, usando frames base64")
+                        logger.warning(f"[{vid}]    ⚠️ No se pudo subir clip al almacenamiento, usando frames base64")
 
-                # Extraer frames base64 solo si no se pudo subir a GCS (fallback)
-                frames_b64 = None if gcs_clip_uri else self._extract_frames_base64(clip_path, vid)
+                frames_b64 = None if storage_clip_uri else self._extract_frames_base64(clip_path, vid)
 
 
                 # 2. Construir prompt
@@ -104,12 +103,11 @@ class OperationalSegmentAnalyzer:
                     event_type=ev_type,
                     event_priority=ev_priority,
                     time_range=time_range,
-                    is_frames_only=(gcs_clip_uri is None)
+                    is_frames_only=(storage_clip_uri is None)
                 )
 
-                # 3. Analizar con Gemini — RETRY CON BACKOFF
-                # clip_to_pass: gs:// URI si está disponible, ruta local como fallback
-                clip_to_pass = gcs_clip_uri or clip_path
+                # 3. Analizar con la IA local — RETRY CON BACKOFF
+                clip_to_pass = storage_clip_uri or clip_path
                 gemini_result = None
                 last_error = None
 
@@ -153,16 +151,16 @@ class OperationalSegmentAnalyzer:
                 else:
                     logger.warning(f"[{vid}]    ❌ Gemini falló tras {self.GEMINI_MAX_RETRIES} intentos para segmento {seg_num} ({seg_elapsed:.1f}s): {last_error}")
 
-                # Limpiar clip temporal local y GCS
+                # Limpiar clip temporal local y remoto.
                 if clip_path and os.path.exists(clip_path):
                     os.remove(clip_path)
-                if gcs_clip_uri and self.storage_adapter and self.storage_adapter.is_available():
+                if storage_clip_uri and self.storage_adapter and self.storage_adapter.is_available():
                     try:
-                        blob_name = gcs_clip_uri.split("/", 3)[-1] if gcs_clip_uri.startswith("gs://") else None
+                        blob_name = storage_clip_uri.split("/", 3)[-1] if storage_clip_uri.startswith("s3://") else None
                         if blob_name:
                             self.storage_adapter.delete_file(blob_name)
                     except Exception:
-                        pass  # La limpieza GCS es best-effort
+                        pass  # La limpieza remota es best-effort.
 
             except Exception as e:
                 logger.error(f"[{vid}]    ❌ Error en segmento {seg_num} [{ev_type}]: {e}")
@@ -226,7 +224,7 @@ class OperationalSegmentAnalyzer:
                 ret, frame = cap.read()
                 if not ret:
                     continue
-                # Redimensionar a resolución razonable para Gemini (~720p)
+                # Redimensionar a resolución razonable para la IA local (~720p)
                 h, w = frame.shape[:2]
                 if w > 1280:
                     scale = 1280 / w
@@ -272,7 +270,7 @@ class OperationalSegmentAnalyzer:
 
     @staticmethod
     def _truncate_details(data: dict, max_keys: int = 15, max_str: int = 300) -> dict:
-        """Limita el tamaño del dict almacenado en 'details' para evitar documentos Firestore grandes."""
+        """Limita el tamaño del dict almacenado en 'details' para evitar filas de base de datos grandes."""
         if not isinstance(data, dict):
             return {}
         return {
@@ -324,11 +322,11 @@ class OperationalSegmentAnalyzer:
                     cv2.imwrite(frame_path, resized, [cv2.IMWRITE_JPEG_QUALITY, 85])
                     
                     if self.storage_adapter and self.storage_adapter.is_available():
-                        gcs_dest = f"operational/{analysis_id}/seg_{seg_idx:03d}/frame_{i:02d}.jpg"
-                        # Guardar gs:// URI (no signed URL) — las ADC user credentials no
+                        storage_destination = f"operational/{analysis_id}/seg_{seg_idx:03d}/frame_{i:02d}.jpg"
+                        # Guardar la URI de almacenamiento sin URL firmada.
                         # tienen private key para firmar. El endpoint proxy del backend
                         # sirve la imagen con auth propia usando download_as_bytes().
-                        url = self.storage_adapter.upload_file(frame_path, gcs_dest, return_signed_url=False)
+                        url = self.storage_adapter.upload_file(frame_path, storage_destination, return_signed_url=False)
                         if url:
                             frame_urls.append(url)
                     os.remove(frame_path)

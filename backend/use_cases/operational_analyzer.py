@@ -74,13 +74,19 @@ class OperationalAnalyzer:
 
     def _init_gemini(self):
         if self.gemini_adapter is None:
-            from infrastructure.adapters.gemini_adapter import GeminiAdapter
-            self.gemini_adapter = GeminiAdapter()
+            from infrastructure.adapters.ai_gateway import get_ai_gateway
+            self.gemini_adapter = get_ai_gateway()
 
     def _init_storage(self):
         if self.storage_adapter is None:
-            from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-            self.storage_adapter = CloudStorageAdapter()
+            from config.app_config import AppConfig
+            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+            if backend == "minio":
+                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                self.storage_adapter = MinioStorageAdapter(AppConfig)
+            else:
+                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                self.storage_adapter = FilesystemStorageAdapter()
 
     def _get_temp_dir(self) -> str:
         if self._temp_dir is None or not os.path.exists(self._temp_dir):
@@ -184,7 +190,7 @@ class OperationalAnalyzer:
                 _video_hash = _vcache.compute_hash(local_video_path)
                 import hashlib
                 _ctx_str = (analysis.custom_context or "").strip().lower()
-                _ctx_hash = hashlib.md5(_ctx_str.encode('utf-8')).hexdigest()[:8]
+                _ctx_hash = hashlib.sha256(_ctx_str.encode('utf-8')).hexdigest()[:8]
                 _cache_key = f"op:{_video_hash}:{analysis.analysis_type}:{_ctx_hash}"
                 _cached = _vcache.get_cached_analysis(_cache_key)
                 if _cached and _cached.get("original_analysis_id"):

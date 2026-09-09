@@ -131,18 +131,14 @@ const dashboardLayoutRoute = createRoute({
         </div>
     ),
     beforeLoad: async ({ location }) => {
-        if (!authService.isAuthenticated()) {
-            // localStorage is empty — could be a fresh SSO session (e.g. Microsoft OAuth).
-            // Verify with backend before rejecting the navigation.
-            const sessionUser = await authService.verifySession();
-            if (!sessionUser) {
-                throw redirect({
-                    to: '/login',
-                    search: {
-                        redirect: location.href,
-                    },
-                });
-            }
+        const sessionUser = await authService.verifySession();
+        if (!sessionUser) {
+            throw redirect({
+                to: '/login',
+                search: {
+                    redirect: location.href,
+                },
+            });
         }
     },
 });
@@ -338,15 +334,15 @@ const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
     component: () => <div className="p-4">Redirecting...</div>,
-    beforeLoad: () => {
-        if (authService.isAuthenticated()) {
+    beforeLoad: async () => {
+        const sessionUser = await authService.verifySession();
+        if (sessionUser) {
             throw redirect({ to: '/dashboard' });
-        } else {
-            throw redirect({
-                to: '/login',
-                search: { redirect: undefined },
-            });
         }
+        throw redirect({
+            to: '/login',
+            search: { redirect: undefined },
+        });
     },
 });
 

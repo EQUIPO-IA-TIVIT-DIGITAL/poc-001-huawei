@@ -111,8 +111,8 @@ def iniciar_upload():
         {
             "success": true,
             "video_id": "sec_video_xxx",
-            "upload_url": "https://storage.googleapis.com/...",
-            "gcs_path": "gs://bucket/path",
+            "upload_url": "https://storage.example/...",
+            "storage_path": "s3://bucket/path",
             "expiration_hours": 24
         }
     """
@@ -163,7 +163,7 @@ def iniciar_upload():
         sec_logger.info(f"   Cámara: {nombre_camara}")
         sec_logger.info(f"   Ubicación: {ubicacion}")
         sec_logger.info(f"   Archivo: {data['filename']}")
-        sec_logger.info(f"   GCS Path: {upload_data['gcs_path']}")
+        sec_logger.info(f"   Storage path: {upload_data['storage_path']}")
 
         security_video = SecurityVideo(
             id=video_id,
@@ -172,7 +172,7 @@ def iniciar_upload():
             ubicacion=ubicacion,
             fecha_grabacion=fecha_grabacion,
             duracion_segundos=0,  # Se actualizará después del upload
-            ruta_gcs=upload_data["gcs_path"],
+            storage_path=upload_data["storage_path"],
             estado=EstadoSecurityVideo.UPLOADING,
             metadata_tecnico={
                 "filename_original": data["filename"],
@@ -196,8 +196,8 @@ def iniciar_upload():
                     "success": True,
                     "video_id": video_id,
                     "upload_url": upload_data["upload_url"],
-                    "gcs_path": upload_data["gcs_path"],
-                    "bucket": upload_data["bucket"],
+                    "storage_path": upload_data["storage_path"],
+                    "storage_bucket": upload_data["storage_bucket"],
                     "blob_name": upload_data["blob_name"],
                     "expiration_hours": upload_data["expiration_hours"],
                 }
@@ -220,7 +220,7 @@ def iniciar_upload():
 def subir_video_stream():
     """
     Sube un video directamente al backend (proxy para evitar CORS)
-    El backend recibe el archivo y lo sube a GCS
+    El backend recibe el archivo y lo sube al almacenamiento.
 
     Body: multipart/form-data
         - video_id: ID del video de seguridad
@@ -260,7 +260,7 @@ def subir_video_stream():
         # Log info del archivo
         logger.info(f"📦 Archivo recibido: {file.filename}")
         logger.info(f"   Content-Type: {file.content_type}")
-        logger.info(f"   Destino GCS: {video.ruta_gcs}")
+        logger.info(f"   Destino de almacenamiento: {video.storage_path}")
 
         # Detectar tamaño del archivo
         # Intentar obtener Content-Length, si no, seekear al final
@@ -290,7 +290,7 @@ def subir_video_stream():
             
             result = _get_multipart_service().subir_archivo_multipart(
                 file_stream=file.stream,
-                gcs_path=video.ruta_gcs,
+                storage_path=video.storage_path,
                 content_type=file.content_type or "video/mp4",
                 chunk_size=50 * 1024 * 1024,  # 50MB chunks
                 max_workers=5,  # 5 uploads paralelos
@@ -311,7 +311,7 @@ def subir_video_stream():
             
             bytes_uploaded = _get_upload_service().subir_archivo_directo(
                 file_stream=file.stream,
-                gcs_path=video.ruta_gcs,
+                storage_path=video.storage_path,
                 content_type=file.content_type or "video/mp4",
             )
 
@@ -325,7 +325,7 @@ def subir_video_stream():
         video.actualizar_estado(EstadoSecurityVideo.UPLOADED)
         
         # Obtener metadata del archivo
-        metadata = _get_upload_service().obtener_metadata_archivo(video.ruta_gcs)
+        metadata = _get_upload_service().obtener_metadata_archivo(video.storage_path)
         if metadata:
             video.metadata_tecnico.update(metadata)
             if "duracion_segundos" in metadata:
@@ -402,11 +402,11 @@ def completar_upload():
             sec_logger.error(f"Video no encontrado: {video_id}")
             return jsonify({"success": False, "error": "Video no encontrado"}), 404
 
-        sec_logger.info(f"   GCS Path: {video.ruta_gcs}")
+        sec_logger.info(f"   Storage path: {video.storage_path}")
 
         # Verificar que el upload esté completo
-        if not _get_upload_service().verificar_upload_completo(video.ruta_gcs):
-            sec_logger.error(f"Archivo no completamente subido en GCS")
+        if not _get_upload_service().verificar_upload_completo(video.storage_path):
+            sec_logger.error(f"Archivo no completamente subido en el almacenamiento")
             return (
                 jsonify(
                     {"success": False, "error": "El archivo no se ha subido completamente"}
@@ -414,10 +414,10 @@ def completar_upload():
                 400,
             )
 
-        sec_logger.info(f"   ✅ Archivo verificado en GCS")
+        sec_logger.info(f"   ✅ Archivo verificado en el almacenamiento")
 
         # Obtener metadata del archivo
-        metadata = _get_upload_service().obtener_metadata_archivo(video.ruta_gcs)
+        metadata = _get_upload_service().obtener_metadata_archivo(video.storage_path)
         if metadata:
             video.metadata_tecnico.update(metadata)
             sec_logger.info(f"   Tamaño: {metadata.get('size_bytes', 0) / (1024*1024):.2f} MB")
@@ -554,7 +554,7 @@ Sistema TIVIT-CU002 Security
 @api_socio_requerido
 def reprocesar_video(video_id: str):
     """
-    Reprocesa un video que ya está en GCS sin necesidad de subirlo de nuevo.
+    Reprocesa un video ya almacenado sin necesidad de subirlo de nuevo.
     Útil cuando el análisis falló o se quiere re-analizar con algoritmos actualizados.
 
     Body (opcional):
@@ -590,16 +590,16 @@ def reprocesar_video(video_id: str):
         if not _has_video_access(video):
             return jsonify({"success": False, "error": "No tiene permisos para reprocesar este video"}), 403
 
-        # Verificar que el archivo existe en GCS
-        if not _get_upload_service().verificar_upload_completo(video.ruta_gcs):
+        # Verificar que el archivo existe en el almacenamiento.
+        if not _get_upload_service().verificar_upload_completo(video.storage_path):
             return (
                 jsonify(
-                    {"success": False, "error": "El archivo no existe en GCS. Debe subir el video nuevamente."}
+                    {"success": False, "error": "El archivo no existe en el almacenamiento. Debe subir el video nuevamente."}
                 ),
                 400,
             )
 
-        logger.info(f"   ✅ Archivo verificado en GCS: {video.ruta_gcs}")
+        logger.info(f"   ✅ Archivo verificado en almacenamiento: {video.storage_path}")
 
         # Limpiar eventos anteriores si existen
         try:
@@ -684,7 +684,7 @@ def reprocesar_video(video_id: str):
                     "status": "processing",
                     "message": "Reprocesamiento iniciado. El video será analizado nuevamente.",
                     "estimated_time_minutes": estimated_time_minutes,
-                    "gcs_path": video.ruta_gcs,
+                    "storage_path": video.storage_path,
                     "job_id": job_id  # Fase 3 - ID del trabajo en la cola Redis (None si usó threading)
                 }
             ),
@@ -797,7 +797,7 @@ def obtener_video(video_id: str):
             "ubicacion": video.ubicacion,
             "fecha_grabacion": video.fecha_grabacion,
             "duracion_segundos": video.duracion_segundos,
-            "ruta_gcs": video.ruta_gcs,
+            "storage_path": video.storage_path,
             "estado": video.estado.value,
             "metadata_tecnico": video.metadata_tecnico,
             "estadisticas": video.estadisticas,
@@ -1020,9 +1020,9 @@ def eliminar_video(video_id: str):
             logger.warning(f"⚠️ Intento de eliminación no autorizado: usuario={current_username} video={video_id}")
             return jsonify({"success": False, "error": "No tiene permisos para eliminar este video"}), 403
 
-        # Eliminar archivo de GCS
-        if video.ruta_gcs:
-            _get_upload_service().eliminar_archivo(video.ruta_gcs)
+        # Eliminar archivo del almacenamiento.
+        if video.storage_path:
+            _get_upload_service().eliminar_archivo(video.storage_path)
 
         # Eliminar de repositorio (incluye eventos)
         success = _get_security_repo().eliminar_video(video_id)
@@ -1076,7 +1076,7 @@ def procesar_video(video_id: str):
         sec_logger.info(f"   Cámara: {video.nombre_camara}")
         sec_logger.info(f"   Ubicación: {video.ubicacion}")
         sec_logger.info(f"   Estado actual: {video.estado.value}")
-        sec_logger.info(f"   GCS Path: {video.ruta_gcs}")
+        sec_logger.info(f"   Storage path: {video.storage_path}")
         
         # Verificar que el video esté en estado "uploaded"
         if video.estado != EstadoSecurityVideo.UPLOADED:
@@ -1086,66 +1086,58 @@ def procesar_video(video_id: str):
                 "error": f"El video no está listo para procesar. Estado actual: {video.estado.value}"
             }), 400
         
-        # Intentar usar Cloud Tasks, fallback a threading
-        try:
-            from infrastructure.adapters.cloud_tasks_adapter import CloudTasksAdapter
-            
-            cloud_tasks = CloudTasksAdapter()
-            task_name = cloud_tasks.create_task(
-                queue_name="security-video-processing",
-                endpoint="/api/security/process-worker",
-                payload={"video_id": video_id},
-                delay_seconds=0
-            )
-            
-            sec_logger.info(f"✅ Tarea creada en Cloud Tasks: {task_name}")
-            sec_logger.end_phase("API_PROCESS_REQUEST", success=True, details="Cloud Task creada")
-            
+        # Intentar usar cola RQ, fallback a threading
+        from infrastructure.services.job_queue import enqueue_video_analysis
+        job_id = enqueue_video_analysis(video_id)
+
+        if job_id:
+            sec_logger.info(f"✅ Tarea creada en cola RQ: {job_id}")
+            sec_logger.end_phase("API_PROCESS_REQUEST", success=True, details="Tarea en cola RQ")
+
             return jsonify({
                 "success": True,
-                "message": "Procesamiento en cola (Cloud Tasks)",
+                "message": "Procesamiento en cola",
                 "video_id": video_id,
-                "task_id": task_name,
+                "task_id": job_id,
                 "note": "Análisis completo de TODOS los eventos (sin clasificaciones)"
             }), 200
-            
-        except Exception as cloud_error:
-            # Fallback a threading si Cloud Tasks no está disponible
-            logger.warning(f"⚠️ Cloud Tasks no disponible: {cloud_error}. Usando threading como fallback.")
-            sec_logger.warning(f"Cloud Tasks no disponible, usando threading fallback")
-            
-            # ========== USAR NUEVO PROCESADOR COMPLETO ==========
-            from use_cases.complete_security_processor import CompleteSecurityVideoProcessor
-            processor = CompleteSecurityVideoProcessor(max_parallel_workers=4)
-            
-            import threading
-            
-            def process_with_logging(vid_id):
-                """Wrapper para procesar con logging de inicio/fin"""
-                sec_logger.set_context(vid_id, "BACKGROUND_PROCESS")
-                sec_logger.info(f"🔄 PIPELINE v3.0 INICIADO (Video Clips + Gemini)")
-                sec_logger.info(f"   Enfoque: Análisis exhaustivo con clips de video")
-                try:
-                    processor.process_video_complete(vid_id)
-                    sec_logger.info(f"✅ THREAD COMPLETADO - Análisis completo finalizado")
-                except Exception as e:
-                    sec_logger.error(f"❌ THREAD ERROR: {e}")
-                    sec_logger.error(f"   Traceback: {traceback.format_exc()}")
-            
-            thread = threading.Thread(
-                target=process_with_logging,
-                args=(video_id,)
-            )
-            thread.start()
-            
-            sec_logger.end_phase("API_PROCESS_REQUEST", success=True, details="Thread iniciado (fallback)")
-            
-            return jsonify({
-                "success": True,
-                "message": "Procesamiento iniciado en background (threading fallback)",
-                "video_id": video_id,
-                "note": "Análisis completo de TODOS los eventos (sin clasificaciones)"
-            }), 200
+
+        # Fallback a threading si la cola no está disponible
+        logger.warning(f"⚠️ Cola no disponible. Usando threading como fallback.")
+        sec_logger.warning(f"Cola no disponible, usando threading fallback")
+
+        # ========== USAR NUEVO PROCESADOR COMPLETO ==========
+        from use_cases.complete_security_processor import CompleteSecurityVideoProcessor
+        processor = CompleteSecurityVideoProcessor(max_parallel_workers=4)
+
+        import threading
+
+        def process_with_logging(vid_id):
+            """Wrapper para procesar con logging de inicio/fin"""
+            sec_logger.set_context(vid_id, "BACKGROUND_PROCESS")
+            sec_logger.info(f"🔄 PIPELINE v3.0 INICIADO (Video Clips + Gemini)")
+            sec_logger.info(f"   Enfoque: Análisis exhaustivo con clips de video")
+            try:
+                processor.process_video_complete(vid_id)
+                sec_logger.info(f"✅ THREAD COMPLETADO - Análisis completo finalizado")
+            except Exception as e:
+                sec_logger.error(f"❌ THREAD ERROR: {e}")
+                sec_logger.error(f"   Traceback: {traceback.format_exc()}")
+
+        thread = threading.Thread(
+            target=process_with_logging,
+            args=(video_id,)
+        )
+        thread.start()
+
+        sec_logger.end_phase("API_PROCESS_REQUEST", success=True, details="Thread iniciado (fallback)")
+
+        return jsonify({
+            "success": True,
+            "message": "Procesamiento iniciado en background (threading fallback)",
+            "video_id": video_id,
+            "note": "Análisis completo de TODOS los eventos (sin clasificaciones)"
+        }), 200
     
     except Exception as e:
         sec_logger.error(f"❌ Error iniciando procesamiento: {e}")
@@ -1235,37 +1227,29 @@ def indexar_video(video_id: str):
                 "error": f"El video no está listo para indexar. Estado: {video.estado.value}"
             }), 400
         
-        # Procesar en background con Cloud Tasks o threading
-        try:
-            from infrastructure.adapters.cloud_tasks_adapter import CloudTasksAdapter
-            
-            cloud_tasks = CloudTasksAdapter()
-            task_name = cloud_tasks.create_task(
-                queue_name="security-video-processing",
-                endpoint="/api/security/index-worker",
-                payload={"video_id": video_id},
-                delay_seconds=0
-            )
-            
-            sec_logger.info(f"✅ Tarea de indexado creada: {task_name}")
-            
+        # Procesar en background con cola RQ o aviso de no soportado
+        from infrastructure.services.job_queue import enqueue_video_analysis
+        job_id = enqueue_video_analysis(video_id)
+
+        if job_id:
+            sec_logger.info(f"✅ Tarea de indexado creada: {job_id}")
+
             return jsonify({
                 "success": True,
                 "message": "Indexado en cola (10-15 minutos)",
                 "video_id": video_id,
-                "task_id": task_name,
+                "task_id": job_id,
                 "costo_estimado": 1.50
             }), 200
-            
-        except Exception:
-            # Fallback a threading - NOTA: Indexado no implementado en CompleteSecurityVideoProcessor
-            # El análisis completo ya incluye toda la información
-            logger.warning("⚠️ Indexado separado no disponible en nuevo sistema. Use /process en su lugar.")
-            return jsonify({
-                "success": False,
-                "error": "Indexado separado no implementado. Use el endpoint /process para análisis completo.",
-                "message": "El nuevo sistema analiza todo de una vez, no requiere indexado separado"
-            }), 501
+
+        # Fallback - NOTA: Indexado no implementado en CompleteSecurityVideoProcessor
+        # El análisis completo ya incluye toda la información
+        logger.warning("⚠️ Indexado separado no disponible en nuevo sistema. Use /process en su lugar.")
+        return jsonify({
+            "success": False,
+            "error": "Indexado separado no implementado. Use el endpoint /process para análisis completo.",
+            "message": "El nuevo sistema analiza todo de una vez, no requiere indexado separado"
+        }), 501
     
     except Exception as e:
         sec_logger.error(f"❌ Error iniciando indexado: {e}")
@@ -1318,7 +1302,7 @@ def generar_reporte_completo(video_id: str):
     Returns:
         {
             "success": true,
-            "reporte_url": "gs://...",
+            "reporte_url": "s3://bucket/...",
             "clips_analizados_nuevos": 15,
             "costo_total": 2.50,
             "tiempo_generacion": 120

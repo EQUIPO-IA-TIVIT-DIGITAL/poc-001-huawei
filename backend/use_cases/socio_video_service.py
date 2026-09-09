@@ -201,7 +201,7 @@ class SocioVideoService:
                 "titulo": metadatos.get("titulo"),
                 "nombre_archivo": metadatos.get("nombre_archivo"),
                 "duracion_segundos": metadatos.get("duracion_segundos", 0),
-                "gcs_uri": metadatos.get("gcs_uri"),
+                "storage_uri": metadatos.get("storage_uri"),
                 "video_url": video_url,
                 "resultado_ia": metadatos.get("resultado_ia"),
                 "confianza_ia": metadatos.get("confianza_ia", 0),

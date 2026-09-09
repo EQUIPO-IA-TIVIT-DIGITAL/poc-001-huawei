@@ -1,15 +1,15 @@
 """
 Container de Inyección de Dependencias - TIVIT Video
-Local-first: Soporta GCP legacy y stack local (Postgres+MinIO+vLLM 32B).
+Local-first: Postgres + MinIO/filesystem + vLLM + Whisper.
 
 Feature flags en config/app_config.py: STORAGE_BACKEND, DB_BACKEND, AI_PROVIDER.
 Este módulo centraliza la creación y acceso a repositorios y servicios.
 
 Uso:
-    from infrastructure.dependencies import get_firestore_adapter, get_storage_adapter
+    from infrastructure.dependencies import get_database_adapter, get_storage_adapter
 
     # En cualquier blueprint o módulo:
-    firestore = get_firestore_adapter()
+    database = get_database_adapter()
     storage = get_storage_adapter()
 """
 
@@ -21,7 +21,7 @@ from flask import current_app
 
 
 class VideoRepositoryProtocol(Protocol):
-    """Interfaz para repositorio de videos (Firestore)"""
+    """Interfaz para repositorio de videos."""
 
     def save_video(self, video: Any) -> bool: ...
     def get_video(self, id: str) -> Optional[Any]: ...
@@ -31,7 +31,7 @@ class VideoRepositoryProtocol(Protocol):
 
 
 class UserRepositoryProtocol(Protocol):
-    """Interfaz para repositorio de usuarios (Firestore)"""
+    """Interfaz para repositorio de usuarios."""
 
     def obtener_por_id(self, id: str) -> Optional[Any]: ...
     def autenticar(self, username: str, password: str) -> Optional[Any]: ...
@@ -40,125 +40,98 @@ class UserRepositoryProtocol(Protocol):
 
 
 class StorageAdapterProtocol(Protocol):
-    """Interfaz para adaptador de almacenamiento (Cloud Storage)"""
+    """Interfaz para adaptador de almacenamiento."""
 
-    def upload_video(self, local_path: str, gcs_path: str) -> Optional[str]: ...
+    def upload_video(self, local_path: str, storage_path: str) -> Optional[str]: ...
     def is_available(self) -> bool: ...
     def get_signed_url(
-        self, gcs_path: str, expiration_minutes: int
+        self, storage_path: str, expiration_minutes: int
     ) -> Optional[str]: ...
 
 
 class DatabaseAdapterProtocol(Protocol):
-    """Interfaz para adaptador de base de datos (Firestore)"""
+    """Interfaz para adaptador de base de datos."""
 
     def save_video(self, video: Any) -> bool: ...
     def is_available(self) -> bool: ...
 
 
-# ========== FUNCIONES DE ACCESO A DEPENDENCIAS GCP ==========
+# ========== FUNCIONES DE ACCESO A DEPENDENCIAS LOCALES ==========
 
 
-def get_gcp_config():
-    """Obtiene la configuración (GCP legacy o AppConfig local)"""
+def get_app_config():
+    """Obtiene la configuración local (AppConfig)."""
     try:
-        return current_app.extensions["gcp_config"]
+        return current_app.extensions["app_config"]
     except (RuntimeError, KeyError):
-        try:
-            from config.app_config import AppConfig
-            return AppConfig()
-        except ImportError:
-            from config.gcp_config import GCPConfig
-            return GCPConfig()
+        from config.app_config import AppConfig
+        return AppConfig()
 
 
 def get_storage_adapter() -> Optional[StorageAdapterProtocol]:
-    """Obtiene el adaptador de almacenamiento (MinIO/filesystem/GCS según AppConfig)"""
+    """Obtiene el adaptador de almacenamiento (MinIO/filesystem según AppConfig)"""
     try:
-        # local-first: gcp_storage key aún usada como alias genérico
-        s = current_app.extensions.get("gcp_storage") or current_app.extensions.get("storage_adapter")
+        s = current_app.extensions.get("storage_adapter")
         if s is not None:
             return s
         raise KeyError
     except (RuntimeError, KeyError):
-        try:
-            from config.app_config import AppConfig
-            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
-            if backend == "minio":
-                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
-                return MinioStorageAdapter(AppConfig)
-            elif backend == "filesystem":
-                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
-                return FilesystemStorageAdapter()
-        except Exception:
-            pass
-        from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-        return CloudStorageAdapter(get_gcp_config())
+        from config.app_config import AppConfig
+        backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+        if backend == "minio":
+            from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+            return MinioStorageAdapter(AppConfig)
+        from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+        return FilesystemStorageAdapter()
 
 
-def get_firestore_adapter() -> Optional[DatabaseAdapterProtocol]:
-    """Obtiene el adaptador de BD (Firestore legacy o Postgres local)"""
+def get_database_adapter() -> Optional[DatabaseAdapterProtocol]:
+    """Obtiene el adaptador de BD (Postgres/SQLite local)"""
     try:
-        db = current_app.extensions.get("gcp_firestore") or current_app.extensions.get("db_adapter")
+        db = current_app.extensions.get("db_adapter")
         if db is not None:
             return db
         raise KeyError
     except (RuntimeError, KeyError):
-        try:
-            from config.app_config import AppConfig
-            if getattr(AppConfig, "DB_BACKEND", "") in ("postgres", "sqlite"):
-                from infrastructure.db.session import engine
-                # lightweight adapter shim for verificar_conexion
-                class _LocalDB:
-                    def is_available(self):  # type: ignore
-                        try:
-                            from sqlalchemy import text
-                            with engine.connect() as c:
-                                c.execute(text("SELECT 1"))
-                            return True
-                        except Exception:
-                            return False
-                return _LocalDB()  # type: ignore
-        except Exception:
-            pass
-        from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-        return FirestoreAdapter(get_gcp_config())
+        from infrastructure.db.session import engine
+        class _LocalDB:
+            def is_available(self):  # type: ignore
+                try:
+                    from sqlalchemy import text
+                    with engine.connect() as c:
+                        c.execute(text("SELECT 1"))
+                    return True
+                except Exception:
+                    return False
+            def save_video(self, video):  # type: ignore
+                try:
+                    from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
+                    return bool(SQLAlchemyVideoRepository().guardar(video))
+                except Exception:
+                    return False
+        return _LocalDB()  # type: ignore
 
 
 def get_user_repository() -> UserRepositoryProtocol:
     """
-    Obtiene el repositorio de usuarios (Postgres/SQLite local o Firestore legacy).
+    Obtiene el repositorio de usuarios (Postgres/SQLite local).
     """
     try:
         return current_app.extensions["usuario_repository"]
     except (RuntimeError, KeyError):
-        try:
-            from config.app_config import AppConfig
-            if getattr(AppConfig, "DB_BACKEND", "") in ("postgres", "sqlite"):
-                from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyUserRepository
-                return SQLAlchemyUserRepository()
-        except Exception:
-            pass
-        from infrastructure.repositories.user_repository import UsuarioRepositoryMemory
-        return UsuarioRepositoryMemory()
+        from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyUserRepository
+        return SQLAlchemyUserRepository()
 
 
 def get_video_repository() -> VideoRepositoryProtocol:
     """
-    Obtiene el repositorio de videos (Postgres/SQLite local o Firestore legacy).
+    Obtiene el repositorio de videos (Postgres/SQLite local).
     """
     try:
         return current_app.extensions["video_repository"]
     except (RuntimeError, KeyError):
-        try:
-            from config.app_config import AppConfig
-            if getattr(AppConfig, "DB_BACKEND", "") in ("postgres", "sqlite"):
-                from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
-                return SQLAlchemyVideoRepository()
-        except Exception:
-            pass
-        from infrastructure.repositories.video_repository import VideoRepositoryFirestore
-        return VideoRepositoryFirestore()
+        from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
+        return SQLAlchemyVideoRepository()
 
 
 def get_video_processor():
@@ -175,7 +148,7 @@ def get_video_processor():
 
 
 def get_ai_service():
-    """Obtiene el servicio de IA (Gateway local 32B o Gemini legacy)"""
+    """Obtiene el servicio de IA (Gateway local 32B / ApiLLM)"""
     try:
         svc = current_app.extensions.get("ai_service")
         if svc is not None:
@@ -193,55 +166,33 @@ def get_ai_service():
         return AIService()
 
 
-def get_gemini_adapter():
-    """Obtiene el adaptador de IA (alias compat: Gateway 32B)"""
+def get_ai_adapter():
+    """Obtiene el adaptador de IA local."""
     try:
-        ga = current_app.extensions.get("gemini_adapter")
+        ga = current_app.extensions.get("ai_adapter")
         if ga is not None:
             return ga
         raise RuntimeError
     except RuntimeError:
-        try:
-            from config.app_config import AppConfig
-            if getattr(AppConfig, "AI_PROVIDER", "hybrid") != "disabled":
-                from infrastructure.adapters.ai_gateway import get_ai_gateway
-                return get_ai_gateway()
-        except Exception:
-            pass
-        from infrastructure.adapters.gemini_adapter import GeminiAdapter
-        return GeminiAdapter(get_gcp_config())
+        from infrastructure.adapters.ai_gateway import get_ai_gateway
+        return get_ai_gateway()
 
 
-def get_cloud_tasks_adapter():
-    """Obtiene el adaptador de Cloud Tasks"""
+def get_task_queue():
+    """Obtiene el adaptador de cola de tareas (RQ)"""
     try:
-        return current_app.extensions.get("cloud_tasks")
+        return current_app.extensions.get("task_queue")
     except RuntimeError:
-        from infrastructure.adapters.cloud_tasks_adapter import CloudTasksAdapter
-
-        return CloudTasksAdapter()
+        return None
 
 
-def get_video_intelligence_adapter():
-    """Obtiene el adaptador de Video Intelligence API"""
-    try:
-        return current_app.extensions.get("video_intelligence")
-    except RuntimeError:
-        from infrastructure.adapters.gcp_video_intelligence import (
-            VideoIntelligenceAdapter,
-        )
-
-        return VideoIntelligenceAdapter(get_gcp_config())
-
-
-def verificar_conexion_gcp() -> dict:
+def verificar_conexion_local() -> dict:
     """
-    Verifica la conexión con todos los servicios (GCP legacy o local).
+    Verifica la conexión con todos los servicios locales (stack propio).
     """
     storage = get_storage_adapter()
-    firestore = get_firestore_adapter()
-    video_intel = get_video_intelligence_adapter()
-    cloud_tasks = get_cloud_tasks_adapter()
+    db = get_database_adapter()
+    task_queue = get_task_queue()
     # IA gateway
     try:
         ai = get_ai_service()
@@ -249,21 +200,17 @@ def verificar_conexion_gcp() -> dict:
     except Exception:
         ai_available = False
     return {
-        "cloud_storage": {
+        "storage": {
             "available": storage.is_available() if storage and hasattr(storage, "is_available") else False,
-            "service": "Cloud Storage / MinIO / Filesystem",
+            "service": "MinIO / Filesystem",
         },
-        "firestore": {
-            "available": firestore.is_available() if firestore and hasattr(firestore, "is_available") else False,
-            "service": "Firestore / Postgres",
+        "database": {
+            "available": db.is_available() if db and hasattr(db, "is_available") else False,
+            "service": "PostgreSQL / SQLite",
         },
-        "video_intelligence": {
-            "available": video_intel.is_available() if video_intel and hasattr(video_intel, "is_available") else False,
-            "service": "Video Intelligence API",
-        },
-        "cloud_tasks": {
-            "available": getattr(cloud_tasks, "disponible", False) if cloud_tasks else False,
-            "service": "Cloud Tasks / RQ",
+        "task_queue": {
+            "available": bool(task_queue),
+            "service": "Redis + RQ",
         },
         "ai_gateway": {
             "available": bool(ai_available),
@@ -272,143 +219,105 @@ def verificar_conexion_gcp() -> dict:
     }
 
 
-# ========== INICIALIZACIÓN DE DEPENDENCIAS GCP ==========
+# ========== INICIALIZACIÓN DE DEPENDENCIAS (LOCAL-FIRST) ==========
 
 
 def init_dependencies(app):
     """
-    Inicializa todas las dependencias (local-first con fallback GCP legacy).
+    Inicializa todas las dependencias (stack 100% local).
 
     Flags en config/app_config.py: STORAGE_BACKEND, DB_BACKEND, AI_PROVIDER.
     Esta función se llama desde create_app() en main.py.
     """
-    import os
     import logging
 
     logger = logging.getLogger(__name__)
 
-    # Config — local-first con compat GCP
-    try:
-        from config.app_config import AppConfig as _Config
-        app_config = _Config()
-        is_local = getattr(_Config, "DB_BACKEND", "sqlite") in ("postgres", "sqlite") or getattr(_Config, "STORAGE_BACKEND", "filesystem") in ("minio", "filesystem")
-    except ImportError:
-        from config.gcp_config import GCPConfig as _Config
-        app_config = _Config()
-        is_local = False
+    # Config — AppConfig local
+    from config.app_config import AppConfig as _Config
+    app_config = _Config()
 
-    # Compat: exponer como gcp_config para código legacy
-    gcp_config = app_config
-
-    # ---- Storage (MinIO / Filesystem / GCS legacy) ----
-    gcp_storage = None
-    storage_backend = getattr(app_config, "STORAGE_BACKEND", "filesystem") if is_local else "gcs_legacy"
+    # ---- Storage (MinIO / Filesystem) ----
+    storage_adapter = None
+    storage_backend = getattr(app_config, "STORAGE_BACKEND", "filesystem")
     if storage_backend == "minio":
         try:
             from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
-            gcp_storage = MinioStorageAdapter(app_config)
+            storage_adapter = MinioStorageAdapter(app_config)
         except Exception as e:
             logger.error(f"❌ MinIO init fallo, fallback filesystem: {e}")
             try:
                 from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
-                gcp_storage = FilesystemStorageAdapter()
+                storage_adapter = FilesystemStorageAdapter()
             except Exception as e2:
                 logger.error(f"❌ Filesystem fallback fallo: {e2}")
-    elif storage_backend == "filesystem":
+    else:
         try:
             from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
-            gcp_storage = FilesystemStorageAdapter()
+            storage_adapter = FilesystemStorageAdapter()
         except Exception as e:
             logger.error(f"❌ FilesystemStorage init fallo: {e}")
-    else:
-        try:
-            from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-            gcp_storage = CloudStorageAdapter(gcp_config)
-        except Exception as e:
-            logger.error(f"❌ GCS init fallo: {e}")
 
-    # ---- DB (Postgres/SQLite local o Firestore legacy) ----
-    gcp_firestore = None
-    db_backend = getattr(app_config, "DB_BACKEND", "sqlite") if is_local else "firestore_legacy"
-    if db_backend in ("postgres", "sqlite"):
-        # local: no Firestore, exponer shim is_available via SessionLocal
-        try:
-            from infrastructure.db.session import engine
-            from sqlalchemy import text
-            # ensure tables exist (idempotente, para clone sin alembic)
-            try:
-                from infrastructure.db.base import Base
-                import infrastructure.db.models  # noqa
-                Base.metadata.create_all(bind=engine)
-            except Exception as e:
-                logger.warning(f"create_all fallo (continuando): {e}")
-            class _LocalDB:
-                def is_available(self):
-                    try:
-                        with engine.connect() as c:
-                            c.execute(text("SELECT 1"))
-                        return True
-                    except Exception:
-                        return False
-            gcp_firestore = _LocalDB()
-        except Exception as e:
-            logger.error(f"❌ Local DB shim fallo: {e}")
-    else:
-        try:
-            from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-            gcp_firestore = FirestoreAdapter(gcp_config)
-        except Exception as e:
-            logger.error(f"❌ Firestore init fallo: {e}")
-
-    # ---- Cloud Tasks (siempre local RQ shim) ----
+    # ---- DB (Postgres/SQLite local) ----
+    database_adapter = None
+    db_backend = getattr(app_config, "DB_BACKEND", "sqlite")
     try:
-        from infrastructure.adapters.cloud_tasks_adapter import CloudTasksAdapter
-        cloud_tasks = CloudTasksAdapter()
+        from infrastructure.db.session import engine
+        from sqlalchemy import text
+        # ensure tables exist (idempotente, para clone sin alembic)
+        try:
+            if db_backend == "postgres":
+                with engine.begin() as conn:
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+            from infrastructure.db.base import Base
+            import infrastructure.db.models  # noqa
+            Base.metadata.create_all(bind=engine)
+        except Exception as e:
+            logger.warning(f"create_all fallo (continuando): {e}")
+        class _LocalDB:
+            def is_available(self):
+                try:
+                    with engine.connect() as c:
+                        c.execute(text("SELECT 1"))
+                    return True
+                except Exception:
+                    return False
+            def save_video(self, video):
+                try:
+                    from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
+                    return bool(SQLAlchemyVideoRepository().guardar(video))
+                except Exception:
+                    return False
+        database_adapter = _LocalDB()  # type: ignore
     except Exception as e:
-        logger.warning(f"CloudTasks shim fallo: {e}")
-        cloud_tasks = None
+        logger.error(f"❌ Local DB shim fallo: {e}")
+
+    # ---- Cola de tareas (RQ / Redis vía job_queue module) ----
+    task_queue = None
 
     # ---- IA: Gateway 32B local / ApiLLM / disabled ----
-    video_intelligence = None
-    logger.info("ℹ️  Video Intelligence: DESHABILITADO (Gemini Vision v4.0 / vLLM 32B)")
-
-    ai_provider = getattr(app_config, "AI_PROVIDER", "hybrid") if is_local else "api"
-    gemini_adapter = None
+    ai_provider = getattr(app_config, "AI_PROVIDER", "hybrid")
+    ai_adapter = None
     ai_service = None
     speech_adapter = None
 
-    if ai_provider == "disabled":
-        logger.info("ℹ️  AI_PROVIDER=disabled — IA deshabilitada")
-    else:
-        # Intenta Gateway 32B primero
+    if ai_provider != "disabled":
         try:
             from infrastructure.adapters.ai_gateway import get_ai_gateway
             gw = get_ai_gateway()
-            gemini_adapter = gw
+            ai_adapter = gw
             ai_service = gw
             logger.info(f"✅ AI Gateway 32B init provider={ai_provider} local={getattr(app_config,'AI_LOCAL_BASE_URL','-')}")
         except Exception as e:
-            logger.warning(f"⚠️ AI Gateway fallo, intenta Gemini legacy: {e}")
-            try:
-                from infrastructure.adapters.gemini_adapter import GeminiAdapter
-                gemini_adapter = GeminiAdapter()
-                ai_service = gemini_adapter
-            except Exception as e2:
-                logger.error(f"⚠️ Gemini fallback fallo: {e2}")
+            logger.warning(f"⚠️ AI Gateway fallo: {e}")
 
-        # Speech: Whisper local si local, senão GCP STT legacy
-        if is_local and ai_provider != "disabled":
-            try:
-                from infrastructure.adapters.whisper_adapter import WhisperAdapter
-                speech_adapter = WhisperAdapter()
-            except Exception as e:
-                logger.warning(f"⚠️ Whisper init fallo: {e}")
-        else:
-            try:
-                from infrastructure.adapters.gcp_speech import GCPSpeechAdapter
-                speech_adapter = GCPSpeechAdapter(gcp_config)
-            except Exception as e:
-                logger.warning(f"⚠️ GCP STT fallo: {e}")
+        # Speech: Whisper local
+        try:
+            from infrastructure.adapters.whisper_adapter import WhisperAdapter
+            speech_adapter = WhisperAdapter()
+        except Exception as e:
+            logger.warning(f"⚠️ Whisper init fallo: {e}")
 
     try:
         from infrastructure.services.video_frame_extractor import VideoFrameExtractor
@@ -417,47 +326,35 @@ def init_dependencies(app):
         logger.error(f"⚠️ Frame Extractor fallo: {e}")
         frame_extractor = None
 
-    # ---- Repositorios (Postgres/SQLite local o Firestore legacy) ----
-    if is_local and db_backend in ("postgres", "sqlite"):
-        try:
-            from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyUserRepository, SQLAlchemyVideoRepository
-            usuario_repository = SQLAlchemyUserRepository()
-            video_repository = SQLAlchemyVideoRepository()
-            logger.info(f"✅ Repos SQLAlchemy ({db_backend}) activos")
-        except Exception as e:
-            logger.error(f"❌ SQLAlchemy repos fallo, fallback memory: {e}")
-            from infrastructure.repositories.user_repository import UsuarioRepositoryMemory
-            from infrastructure.repositories.video_repository import VideoRepositoryFirestore
-            usuario_repository = UsuarioRepositoryMemory()
-            video_repository = VideoRepositoryFirestore()
-    else:
-        from infrastructure.repositories.user_repository import UsuarioRepositoryMemory
-        from infrastructure.repositories.video_repository import VideoRepositoryFirestore
-        usuario_repository = UsuarioRepositoryMemory()
-        video_repository = VideoRepositoryFirestore()
+    # ---- Repositorios (Postgres/SQLite local) ----
+    try:
+        from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyUserRepository, SQLAlchemyVideoRepository
+        usuario_repository = SQLAlchemyUserRepository()
+        video_repository = SQLAlchemyVideoRepository()
+        logger.info(f"✅ Repos SQLAlchemy ({db_backend}) activos")
+    except Exception as e:
+        logger.error(f"❌ SQLAlchemy repos fallo: {e}")
+        usuario_repository = None
+        video_repository = None
 
     # Caso de uso pre-configurado v4.0
     from use_cases.video_processor import ProcesarVideoUseCase
     video_processor = ProcesarVideoUseCase(
-        storage_adapter=gcp_storage,
-        firestore_adapter=gcp_firestore,
-        gemini_adapter=gemini_adapter,
+        storage_adapter=storage_adapter,
+        firestore_adapter=database_adapter,
+        gemini_adapter=ai_adapter,
         speech_adapter=speech_adapter,
         frame_extractor=frame_extractor,
         video_intelligence_adapter=None,
     )
 
-    # Registrar en app.extensions (compat keys)
-    app.extensions["gcp_config"] = gcp_config
+    # Local extension names used by application code.
     app.extensions["app_config"] = app_config
-    app.extensions["gcp_storage"] = gcp_storage
-    app.extensions["storage_adapter"] = gcp_storage
-    app.extensions["gcp_firestore"] = gcp_firestore
-    app.extensions["db_adapter"] = gcp_firestore
-    app.extensions["cloud_tasks"] = cloud_tasks
-    app.extensions["video_intelligence"] = video_intelligence
+    app.extensions["storage_adapter"] = storage_adapter
+    app.extensions["db_adapter"] = database_adapter
+    app.extensions["task_queue"] = task_queue
     app.extensions["ai_service"] = ai_service
-    app.extensions["gemini_adapter"] = gemini_adapter
+    app.extensions["ai_adapter"] = ai_adapter
     app.extensions["speech_adapter"] = speech_adapter
     app.extensions["frame_extractor"] = frame_extractor
     app.extensions["usuario_repository"] = usuario_repository
@@ -468,19 +365,18 @@ def init_dependencies(app):
     import logging
 
     logger = logging.getLogger(__name__)
-    logger.info("✅ Dependencias GCP inicializadas (Pipeline v4.0):")
+    logger.info("✅ Dependencias inicializadas (stack local, Pipeline v4.0):")
     logger.info(
-        f"   • Cloud Storage: {'✅' if gcp_storage and gcp_storage.is_available() else '❌'}"
+        f"   • Storage: {'✅' if storage_adapter and storage_adapter.is_available() else '❌'}"
     )
     logger.info(
-        f"   • Firestore: {'✅' if gcp_firestore and gcp_firestore.is_available() else '❌'}"
+        f"   • DB: {'✅' if database_adapter and database_adapter.is_available() else '❌'}"
     )
     logger.info(
-        f"   • Cloud Tasks: {'✅' if cloud_tasks and cloud_tasks.disponible else '❌'}"
+        f"   • Task Queue: {'✅' if task_queue else '❌'}"
     )
-    logger.info("   • Video Intelligence: ⏭️  ELIMINADO (Gemini Vision v4.0)")
     logger.info(
-        f"   • Gemini Vision: {'✅' if gemini_adapter and gemini_adapter.is_available() else '❌ (Deshabilitado/Error)'}"
+        f"   • AI Gateway: {'✅' if ai_adapter and ai_adapter.is_available() else '❌ (Deshabilitado/Error)'}"
     )
     logger.info(
         f"   • Speech-to-Text: {'✅' if speech_adapter and speech_adapter.is_available() else '❌ (Deshabilitado/Error)'}"
@@ -490,13 +386,12 @@ def init_dependencies(app):
     )
 
     return {
-        "gcp_config": gcp_config,
-        "gcp_storage": gcp_storage,
-        "gcp_firestore": gcp_firestore,
-        "cloud_tasks": cloud_tasks,
-        "video_intelligence": video_intelligence,
+        "app_config": app_config,
+        "storage_adapter": storage_adapter,
+        "db_adapter": database_adapter,
+        "task_queue": task_queue,
         "ai_service": ai_service,
-        "gemini_adapter": gemini_adapter,
+        "ai_adapter": ai_adapter,
         "speech_adapter": speech_adapter,
         "frame_extractor": frame_extractor,
         "usuario_repository": usuario_repository,

@@ -103,7 +103,7 @@ class WhisperAdapter:
                 except Exception:
                     pass
 
-    # Shim compat con GCPSpeechAdapter.transcribe_video
+    # Compatibilidad con el contrato de transcripción de video.
     def transcribe_video(self, video_path: str, video_id: str = "", duration_hint: float = 0) -> dict:
         r = self.transcribe(video_path)
         if not r.get("success"):

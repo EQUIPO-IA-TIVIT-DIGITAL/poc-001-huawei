@@ -1,7 +1,7 @@
 """
 Job de limpieza periódica de videos expirados.
-Elimina videos de Firestore y GCS con más de 24 horas de antigüedad.
-Se ejecuta cada hora vía RQ Scheduler.
+Elimina videos con más de 24 horas de antigüedad usando el stack local
+(SQLAlchemy + MinIO/Filesystem). Se ejecuta cada hora vía RQ Scheduler.
 """
 import os
 import logging
@@ -9,72 +9,82 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
-# Retención máxima de videos (horas)
-VIDEO_RETENTION_HOURS = 24
-
-
 def cleanup_expired_videos():
     """
-    Job programado: elimina videos de Firestore y GCS con más de 24 horas.
+    Job programado: elimina videos solo cuando VIDEO_RETENTION_HOURS es positivo.
     Se re-programa automáticamente para ejecutarse cada hora.
     """
-    logger.info("🧹 Iniciando limpieza de videos expirados (>24h)...")
+    try:
+        retention_hours = float(os.getenv("VIDEO_RETENTION_HOURS", "0"))
+    except ValueError:
+        retention_hours = 0
+    if retention_hours <= 0:
+        logger.info("🧹 Limpieza de videos deshabilitada (VIDEO_RETENTION_HOURS no configurado)")
+        return {"success": True, "deleted": 0, "disabled": True}
+
+    logger.info("🧹 Iniciando limpieza de videos expirados (>%sh)...", retention_hours)
 
     try:
         from main import create_app
         app = create_app()
 
         with app.app_context():
-            from infrastructure.adapters.gcp_firestore import FirestoreAdapter
+            from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
             from infrastructure.dependencies import get_storage_adapter
-            from config.gcp_config import GCPConfig
+            from infrastructure.db.session import SessionLocal
+            from infrastructure.db.models import VideoModel
 
-            firestore_adapter = FirestoreAdapter(GCPConfig())
+            video_repo = SQLAlchemyVideoRepository()
             storage = get_storage_adapter()
 
-            if not firestore_adapter.is_available():
-                logger.warning("⚠️ Firestore no disponible, saltando limpieza")
-                _reschedule()
-                return {'success': False, 'reason': 'Firestore no disponible'}
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
 
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=VIDEO_RETENTION_HOURS)
-            deleted_count = 0
-            errors = 0
-
-            # Consultar videos con fecha_subida anterior al corte
+            # Consultar videos con fecha previa al corte
+            db = SessionLocal()
             try:
-                from google.cloud.firestore_v1.base_query import FieldFilter
-                query = firestore_adapter.db.collection("videos") \
-                    .where(filter=FieldFilter("fecha_subida", "<", cutoff)) \
-                    .limit(200)
-                docs = list(query.stream())
+                rows = db.query(VideoModel).filter(
+                    VideoModel.created_at < cutoff
+                ).limit(200).all()
             except Exception as e:
                 logger.error(f"Error consultando videos expirados: {e}")
                 _reschedule()
                 return {'success': False, 'error': str(e)}
+            finally:
+                db.close()
 
-            for doc in docs:
-                video_id = doc.id
-                data = doc.to_dict()
+            deleted_count = 0
+            errors = 0
 
-                # Eliminar archivo de GCS
+            for m in rows:
+                video_id = m.id
+
+                # Eliminar archivo de storage (MinIO/Filesystem)
                 if storage and storage.is_available():
                     try:
-                        formato = data.get("formato", "mp4")
-                        blob_name = f"videos/{video_id}.{formato}"
-                        storage.delete_file(blob_name)
+                        storage_uri = m.storage_uri or m.s3_uri
+                        if storage_uri:
+                            if storage_uri.startswith("file://"):
+                                path = storage_uri.removeprefix("file://")
+                                if hasattr(storage, "base_dir"):
+                                    path = str(os.path.relpath(path, storage.base_dir))
+                                storage.delete_file(path)
+                            else:
+                                path = storage_uri.split("://", 1)[-1].split("/", 1)[-1]
+                                storage.delete_file(path)
                         # También eliminar thumbnail
                         storage.delete_file(f"thumbnails/{video_id}.jpg")
                     except Exception as e:
                         logger.warning(f"Error eliminando blobs de {video_id}: {e}")
 
-                # Eliminar documento de Firestore
+                # Eliminar registro de BD
                 try:
-                    doc.reference.delete()
-                    deleted_count += 1
-                    logger.info(f"🗑️ Video expirado eliminado: {video_id}")
+                    if video_repo.eliminar(video_id):
+                        deleted_count += 1
+                        logger.info(f"🗑️ Video expirado eliminado: {video_id}")
+                    else:
+                        errors += 1
                 except Exception as e:
-                    logger.error(f"Error eliminando doc {video_id}: {e}")
+                    logger.error(f"Error eliminando video {video_id}: {e}")
                     errors += 1
 
             logger.info(f"🧹 Limpieza completada: {deleted_count} eliminados, {errors} errores")

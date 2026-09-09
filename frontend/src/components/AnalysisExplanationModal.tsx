@@ -16,7 +16,7 @@ export function AnalysisExplanationModal({ isOpen, onClose }: AnalysisExplanatio
         {
             icon: Upload,
             title: "Subida Segura",
-            description: "Tu video se sube encriptado a Google Cloud Platform. Validamos formato (MP4, MOV), tamaño y duración.",
+            description: "Tu video se sube encriptado al almacenamiento local. Validamos formato (MP4, MOV), tamaño y duración.",
             color: "text-blue-500",
             bg: "bg-blue-500/20",
             border: "border-blue-500/30",
@@ -24,7 +24,7 @@ export function AnalysisExplanationModal({ isOpen, onClose }: AnalysisExplanatio
         },
         {
             icon: Video,
-            title: "Video Intelligence",
+            title: "Análisis de video local",
             description: "La IA analiza cada frame: detecta logos, texto, etiquetas y material inapropiado.",
             color: "text-purple-500",
             bg: "bg-purple-500/20",

@@ -19,6 +19,19 @@ interface VideoProcessingProgressProps {
   onError?: (error: string) => void;
 }
 
+function getFaseDescripcion(fase: string): string {
+  const fases: Record<string, string> = {
+    'INICIO': 'Iniciando procesamiento...',
+    'MOTION_DONE': 'Detección de movimiento completada',
+    'CLIPS_EXTRACTED': 'Clips extraídos',
+    'CLASSIFICATION_DONE': 'Clasificación con IA completada',
+    'DEEP_ANALYSIS_DONE': 'Análisis profundo completado',
+    'EVENTS_SAVED': 'Eventos guardados',
+    'REPORT_DONE': 'Reporte generado'
+  };
+  return fases[fase] || fase;
+}
+
 /**
  * Componente para mostrar progreso en tiempo real usando Server-Sent Events (SSE)
  * 
@@ -94,19 +107,6 @@ export default function VideoProcessingProgress({
       setConnected(false);
     };
   }, [videoId, onComplete, onError]);
-
-  const getFaseDescripcion = (fase: string): string => {
-    const fases: Record<string, string> = {
-      'INICIO': 'Iniciando procesamiento...',
-      'MOTION_DONE': 'Detección de movimiento completada',
-      'CLIPS_EXTRACTED': 'Clips extraídos',
-      'CLASSIFICATION_DONE': 'Clasificación con IA completada',
-      'DEEP_ANALYSIS_DONE': 'Análisis profundo completado',
-      'EVENTS_SAVED': 'Eventos guardados',
-      'REPORT_DONE': 'Reporte generado'
-    };
-    return fases[fase] || fase;
-  };
 
   const getStatusIcon = () => {
     if (error) {

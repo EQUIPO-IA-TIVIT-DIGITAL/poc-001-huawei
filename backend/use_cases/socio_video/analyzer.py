@@ -15,12 +15,12 @@ class VideoDeepAnalyzer:
         self.compressor = compressor
 
     def _analizar_video_completo(
-        self, gcs_uri: str, video: Video, duracion: int,
+        self, storage_uri: str, video: Video, duracion: int,
         contexto_workspace: str = "", metadata_workspace: dict = None
     ) -> Dict[str, Any]:
         """Análisis con video completo desde GCS — Gemini procesa visual + audio nativamente."""
         result = self.gemini.analyze_video_clip_safety(
-            gcs_uri=gcs_uri,
+            storage_uri=storage_uri,
             descripcion=video.descripcion or "",
             duracion=duracion,
             contexto_workspace=contexto_workspace,
@@ -66,13 +66,13 @@ class VideoDeepAnalyzer:
         contexto_workspace = contexto_analisis.get("contexto_usuario", "")
         metadata_workspace = contexto_analisis.get("metadata_workspace", {})
 
-        gcs_uri = video.metadatos_ia.get("gcs_uri") if hasattr(video, 'metadatos_ia') else None
+        storage_uri = video.metadatos_ia.get("storage_uri") if hasattr(video, 'metadatos_ia') else None
         gemini_result = None
 
-        if gcs_uri and self.gemini and self.gemini.is_available():
+        if storage_uri and self.gemini and self.gemini.is_available():
             logger.info(f"🎬 Usando video completo GCS para análisis (audio + visual)")
             gemini_result = self._analizar_video_completo(
-                gcs_uri, video, duracion, contexto_workspace, metadata_workspace
+                storage_uri, video, duracion, contexto_workspace, metadata_workspace
             )
 
         # Fallback a frames si el video completo no está disponible o falló
@@ -94,4 +94,3 @@ class VideoDeepAnalyzer:
             logger.warning("⚠️ [PASO 4] Análisis de contenido no disponible")
 
         return {"vision": gemini_result, "context_updated": True}
-

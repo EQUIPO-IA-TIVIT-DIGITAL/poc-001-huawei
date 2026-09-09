@@ -486,13 +486,11 @@ class Usuario:
     Attributes:
         id: Identificador único del usuario
         username: Nombre de usuario (único)
-        password_hash: Hash de la contraseña (vacío para usuarios Azure AD)
+        password_hash: Hash de la contraseña
         nombre_completo: Nombre completo del usuario
         email: Email del usuario
         rol: Rol del usuario en el sistema
         activo: Indica si el usuario está activo
-        azure_id: OID del usuario en Azure AD/Entra ID (solo usuarios SSO)
-        auth_provider: Proveedor de autenticación ('local' o 'azure_ad')
         metadatos: Información adicional del usuario
         notificaciones: Lista de notificaciones del usuario
         fecha_creacion: Fecha de creación del usuario (ISO 8601)
@@ -501,13 +499,11 @@ class Usuario:
 
     id: str
     username: str
+    password_hash: str
     nombre_completo: str
     email: str
     rol: RolUsuario
-    password_hash: str = ""  # Vacío para usuarios Azure AD
     activo: bool = True
-    azure_id: str = ""  # OID de Microsoft (solo usuarios SSO)
-    auth_provider: str = "local"  # 'local' | 'azure_ad'
     foto_url: str = ""  # URL de la foto de perfil en GCS
     metadatos: Dict[str, Any] = field(default_factory=dict)
     notificaciones: List[Dict[str, Any]] = field(default_factory=list)
@@ -527,9 +523,8 @@ class Usuario:
         if len(self.username) < 3:
             raise ReglaNegocioException("El username debe tener al menos 3 caracteres")
 
-        # password_hash solo es obligatorio para usuarios locales
-        if self.auth_provider == "local" and not self.password_hash:
-            raise ReglaNegocioException("El password_hash es obligatorio para usuarios locales")
+        if not self.password_hash:
+            raise ReglaNegocioException("El password_hash es obligatorio")
 
         if not self.email or not isinstance(self.email, str):
             raise ReglaNegocioException("El email debe ser una cadena no vacía")
@@ -787,7 +782,7 @@ class SecurityVideo:
         ubicacion: Ubicación física de la cámara
         fecha_grabacion: Fecha de grabación del video (ISO format)
         duracion_segundos: Duración total en segundos
-        ruta_gcs: Ruta en Google Cloud Storage (gs://bucket/path)
+        storage_path: Ruta en el almacenamiento (s3://bucket/path o file://path)
         estado: Estado del procesamiento
         metadata_tecnico: Metadata técnico (resolución, fps, codec, etc)
         eventos: Lista de eventos detectados
@@ -806,7 +801,7 @@ class SecurityVideo:
     ubicacion: str
     fecha_grabacion: str
     duracion_segundos: float
-    ruta_gcs: str
+    storage_path: str
     estado: EstadoSecurityVideo = EstadoSecurityVideo.UPLOADING
     metadata_tecnico: Dict[str, Any] = field(default_factory=dict)
     eventos: List[str] = field(default_factory=list)  # IDs de eventos
@@ -827,9 +822,9 @@ class SecurityVideo:
         # Permitir duracion_segundos = 0 durante el upload, se actualizará después
         if self.duracion_segundos < 0:
             raise ReglaNegocioException("La duración no puede ser negativa")
-        if not self.ruta_gcs.startswith("gs://"):
+        if not self.storage_path.startswith(("s3://", "file://")):
             raise ReglaNegocioException(
-                "La ruta GCS debe empezar con gs://"
+                "La ruta de almacenamiento debe empezar con s3:// o file://"
             )
 
     def agregar_evento(self, evento_id: str):
@@ -980,7 +975,7 @@ class OperationalAnalysis:
     id: str
     video_filename: str = ""
     video_duration: float = 0.0
-    video_gcs_url: str = ""
+    video_url: str = ""
     video_size_mb: float = 0.0
 
     # Configuración del análisis
@@ -1024,7 +1019,7 @@ class OperationalAnalysis:
             'id': self.id,
             'video_filename': self.video_filename,
             'video_duration': self.video_duration,
-            'video_gcs_url': self.video_gcs_url,
+            'video_url': self.video_url,
             'video_size_mb': self.video_size_mb,
             'analysis_type': self.analysis_type,
             'custom_context': self.custom_context,
@@ -1134,11 +1129,11 @@ class AudioAnalysis:
     id: str
     video_filename: str = ""
     video_duration: float = 0.0
-    video_gcs_url: str = ""
+    video_url: str = ""
     video_size_mb: float = 0.0
 
     # Audio extraído
-    audio_gcs_url: str = ""
+    audio_url: str = ""
     audio_duration: float = 0.0
 
     # Estado
@@ -1149,7 +1144,7 @@ class AudioAnalysis:
 
     # Resultados de transcripción
     full_transcription: str = ""          # Texto completo transcrito (o preview si está en GCS)
-    full_transcription_gcs_url: str = ""  # URL GCS del texto completo si supera ~100KB
+    full_transcription_url: str = ""  # URL del texto completo si supera ~100KB
     total_segments: int = 0               # Número de segmentos de transcripción
     detected_language: str = "es"         # Idioma principal detectado
     detected_languages: List[str] = field(default_factory=list)
@@ -1178,16 +1173,16 @@ class AudioAnalysis:
             'id': self.id,
             'video_filename': self.video_filename,
             'video_duration': self.video_duration,
-            'video_gcs_url': self.video_gcs_url,
+            'video_url': self.video_url,
             'video_size_mb': self.video_size_mb,
-            'audio_gcs_url': self.audio_gcs_url,
+            'audio_url': self.audio_url,
             'audio_duration': self.audio_duration,
             'estado': self.estado.value if isinstance(self.estado, EstadoAudioAnalysis) else self.estado,
             'progress': self.progress,
             'current_phase': self.current_phase,
             'error_message': self.error_message,
             'full_transcription': self.full_transcription,
-            'full_transcription_gcs_url': self.full_transcription_gcs_url,
+            'full_transcription_url': self.full_transcription_url,
             'total_segments': self.total_segments,
             'detected_language': self.detected_language,
             'detected_languages': self.detected_languages,

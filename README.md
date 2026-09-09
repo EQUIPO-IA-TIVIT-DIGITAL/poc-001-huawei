@@ -4,7 +4,7 @@ Enterprise platform for intelligent video management and moderation, powered by 
 
 ## Overview
 
-TIVIT CU002 is an automated video content moderation and analysis system that leverages multiple AI services to evaluate visual, audio, and operational content. It integrates Google Cloud Video Intelligence API, Gemini Vision, Speech-to-Text, and language models to provide contextual evaluation, automated moderation workflows, and real-time security analysis.
+TIVIT CU002 is an automated video moderation and analysis system that evaluates visual, audio, and operational content on infrastructure under the operator's control. It uses OpenCV, vLLM-compatible vision and text models, Whisper, PostgreSQL, MinIO, and Redis + RQ.
 
 ## Documentation
 
@@ -15,6 +15,7 @@ Extended technical documentation is available in the [docs](docs/README.md) fold
 | [Architecture](docs/ARCHITECTURE.md) | System design and components |
 | [API Reference](docs/API.md) | Complete HTTP API documentation |
 | [Operations & Deployment](docs/OPERATIONS.md) | Setup and configuration |
+| [Local Infrastructure](docs/LOCAL_INFRASTRUCTURE.md) | Required variables and Docker Compose local stack |
 | [Security & Compliance](docs/SECURITY_AND_COMPLIANCE.md) | Security controls and best practices |
 | [Module: Workspaces](docs/MODULE_WORKSPACES.md) | Multi-project organization, soft delete, audit log |
 | [Module: Audio Analysis](docs/MODULE_AUDIO_ANALYSIS.md) | Transcription pipeline, speaker diarization, AI summary, semantic Q&A |
@@ -24,10 +25,10 @@ Extended technical documentation is available in the [docs](docs/README.md) fold
 
 | Module | Description |
 |--------|-------------|
-| **Video Moderation** | Visual analysis with Gemini Vision, explicit content detection, OCR, and logo recognition |
+| **Video Moderation** | Visual analysis with local vision models, explicit content detection, OCR, and logo recognition |
 | **Security** | Surveillance video processing with event detection, temporal indexing, and natural language queries |
 | **Operational** | Operational process analysis with heatmaps, comparisons, and efficiency metrics |
-| **Audio** | Automatic transcription with Speech-to-Text V2/V1, Gemini speaker diarization, AI-generated summary, and timestamped semantic Q&A |
+| **Audio** | Automatic transcription with Whisper, local speaker processing, AI-generated summary, and timestamped semantic Q&A |
 | **Workspaces** | Multi-project organization system with contextual AI chat per workspace |
 | **Administration** | Complete dashboard with analytics, user management, manual moderation, and reports |
 
@@ -39,11 +40,10 @@ Extended technical documentation is available in the [docs](docs/README.md) fold
 |------------|---------|
 | Python | 3.11+ |
 | Flask | 3.x |
-| Google Cloud Firestore | 2.14+ |
-| Google Cloud Storage | 2.14+ |
-| Google Cloud Video Intelligence | 2.11+ |
-| Google Cloud Speech-to-Text | 2.21+ |
-| Google Generative AI (Gemini) | 1.x |
+| PostgreSQL + pgvector | 16 / 0.3+ |
+| MinIO | S3-compatible local storage |
+| vLLM | Local multimodal and text models |
+| Whisper | Local transcription API |
 | Redis + RQ | 5.x / 1.15+ |
 | OpenCV (headless) | 4.8+ |
 | ReportLab | 4.x |
@@ -67,16 +67,12 @@ Extended technical documentation is available in the [docs](docs/README.md) fold
 
 | Service | Purpose |
 |---------|---------|
-| Google Cloud Run | Serverless containers (backend + frontend) |
-| Artifact Registry | Docker image registry |
-| Cloud Storage | Video and asset storage |
-| Firestore | NoSQL database |
-| Secret Manager | Credential management |
-| Cloud Trace | Distributed tracing (OpenTelemetry) |
-| Cloud Profiler | CPU/memory profiling |
-| Cloud Monitoring | Metrics and alerting |
+| Docker Compose | Local development and deployment |
+| PostgreSQL + pgvector | Relational data and vector search |
+| MinIO | Video and asset storage |
+| Redis + RQ | Asynchronous jobs and rate limiting |
+| vLLM + Whisper | Local AI inference |
 | GitHub Actions | CI pipeline (lint + security audit) |
-| Docker Compose | Local development environment |
 | Redis | Async job queue and rate limiting |
 
 ## Architecture
@@ -89,16 +85,15 @@ Extended technical documentation is available in the [docs](docs/README.md) fold
                      +-------------+-------------+
                      |                           |
               +------+------+            +-------+------+
-              |  Cloud Run  |            |  Cloud Run   |
-              |  Frontend   +----------->+  Backend     |
-              |  (Vite)     |            |  (Flask)     |
+               |  Frontend   |            |  Backend     |
+               |  (Nginx)    +----------->+  (Flask)     |
               +-------------+            +------+-------+
                                                 |
                                +----------------+-----------------+
                                |                |                 |
                         +------+------+   +-----+------+  +------+------+
-                        |  Firestore  |   | Cloud      |  |   Redis     |
-                        |  (NoSQL DB) |   | Storage    |  |  (Queue)    |
+                         | PostgreSQL  |   | MinIO      |  |   Redis     |
+                         | + pgvector  |   | (storage)  |  |  (Queue)    |
                         +-------------+   +------------+  +------+------+
                                                                   |
                                                            +------+------+
@@ -113,11 +108,11 @@ tivit-cu002/
 +-- backend/
 |   +-- main.py                     # Flask app entry point + blueprint registration
 |   +-- worker.py                   # RQ worker for async video processing
-|   +-- Dockerfile                  # Production image (multi-stage)
-|   +-- Dockerfile.dev              # Development image
+|   +-- Dockerfile.backend          # Backend production image
+|   +-- Dockerfile.worker           # RQ worker image
 |   +-- requirements.txt            # Python dependencies
 |   +-- requirements-dev.txt        # Dev/linting dependencies
-|   +-- config/                     # GCP config, blacklist, lifecycle rules
+|   +-- config/                     # Local configuration and blacklist
 |   +-- domain/
 |   |   +-- entities.py             # Domain entities and business rules
 |   +-- use_cases/                  # Business logic orchestrators
@@ -128,8 +123,8 @@ tivit-cu002/
 |   |   +-- audio_analyzer.py
 |   |   +-- security_query_engine.py
 |   +-- infrastructure/
-|       +-- adapters/               # GCP, Gemini, OpenCV adapters
-|       +-- repositories/           # Firestore repositories
+|       +-- adapters/               # Local AI, MinIO, Whisper and OpenCV adapters
+|       +-- repositories/           # SQLAlchemy repositories
 |       +-- services/               # Cross-cutting services (cache, observability, logging)
 |       +-- web/                    # HTTP layer (10 blueprints)
 +-- frontend/
@@ -148,13 +143,32 @@ tivit-cu002/
 +-- .env.example                    # Environment variable reference
 ```
 
+## Tests And Quality
+
+```bash
+# Backend
+cd backend
+pip install pip-tools
+pip-compile requirements.in -o requirements.txt
+pip-compile requirements-dev.in -o requirements-dev.txt
+pip install -r requirements-dev.txt
+pytest
+flake8 .
+
+# Frontend
+cd ../frontend
+npm ci
+npm test
+npm run lint
+npm run build
+```
+
 ## Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
-- GCP Service Account with access to: Cloud Storage, Firestore, Video Intelligence API, Speech-to-Text API
-- Gemini API Key
+- Docker-compatible host with sufficient CPU, memory, and GPU capacity for the selected vLLM models
 
 ### Local Setup
 
@@ -166,9 +180,6 @@ cd CU002
 # Copy and configure environment variables
 cp .env.example .env
 # Edit .env and fill in the required values
-
-# Place your GCP service account key
-cp /path/to/service-account.json backend/gcp-credentials.json
 
 # Start all services
 docker compose up -d
@@ -183,16 +194,23 @@ docker compose up -d
 | Redis | localhost:6379 | Job queue (internal only) |
 | Workers | - | RQ worker for async processing (scalable with `--scale worker=N`) |
 
+Health probes: `/health` and `/livez` are lightweight process checks; `/readyz` validates configured database and storage dependencies; `/startupz` confirms basic application startup.
+
 ### Required Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `SECRET_KEY` | Yes | - | Flask session secret key (min. 64 chars) |
-| `GCP_PROJECT_ID` | Yes | - | GCP project ID |
 | `REDIS_PASSWORD` | Yes | - | Redis password |
-| `GCP_BUCKET_NAME` | No | `tivit-cu002-prd-videos` | GCS bucket name |
-| `GCP_REGION` | No | `us-central1` | GCP region |
-| `GEMINI_API_KEY` | No | - | Gemini API key for AI analysis |
+| `DATABASE_URL` | Yes | - | PostgreSQL connection URL |
+| `S3_ENDPOINT` | Yes | `http://minio:9000` | MinIO S3 endpoint |
+| `S3_BUCKET` | No | `cu002-videos` | MinIO bucket |
+| `AI_PROVIDER` | No | `hybrid` | `local`, `api`, `hybrid`, or `disabled` |
+| `AI_LOCAL_BASE_URL` | No | `http://vllm-vision:8000/v1` | vLLM vision endpoint |
+| `AI_API_PROVIDER` | No | `openrouter` | Commercial OpenAI-compatible provider |
+| `AI_API_BASE_URL` | No | `https://openrouter.ai/api/v1` | Optional commercial API fallback |
+| `AI_API_KEY` | Only with `AI_PROVIDER=api` | - | Commercial API key |
+| `WHISPER_BASE_URL` | No | `http://whisper:8001/v1` | Whisper endpoint |
 | `CORS_ORIGIN` | No | `http://localhost` | Allowed CORS origin |
 | `VITE_API_BASE_URL` | No | `http://localhost:5001` | Backend URL for the frontend |
 

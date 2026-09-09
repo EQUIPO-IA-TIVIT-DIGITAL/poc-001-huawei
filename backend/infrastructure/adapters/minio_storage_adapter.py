@@ -13,26 +13,29 @@ logger = logging.getLogger(__name__)
 
 class MinioStorageAdapter:
     def __init__(self, config=None):
-        # config es AppConfig o GCPConfig shim
+        # config usa AppConfig.
         try:
             from config.app_config import AppConfig
             cfg = config or AppConfig
-            self.endpoint = getattr(cfg, "S3_ENDPOINT", None) or os.getenv("S3_ENDPOINT", "http://minio:9000")
+            self.endpoint = getattr(cfg, "S3_ENDPOINT", None) or os.getenv("S3_ENDPOINT")
             self.bucket = getattr(cfg, "S3_BUCKET", None) or getattr(cfg, "BUCKET_NAME", "cu002-videos")
-            self.access_key = getattr(cfg, "S3_ACCESS_KEY", None) or os.getenv("S3_ACCESS_KEY", "minioadmin")
-            self.secret_key = getattr(cfg, "S3_SECRET_KEY", None) or os.getenv("S3_SECRET_KEY", "minioadmin")
+            self.access_key = getattr(cfg, "S3_ACCESS_KEY", None) or os.getenv("S3_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER")
+            self.secret_key = getattr(cfg, "S3_SECRET_KEY", None) or os.getenv("S3_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD")
             self.region = getattr(cfg, "S3_REGION", "us-east-1")
             self.use_ssl = bool(getattr(cfg, "S3_USE_SSL", False))
         except Exception:
-            self.endpoint = os.getenv("S3_ENDPOINT", "http://minio:9000")
+            self.endpoint = os.getenv("S3_ENDPOINT")
             self.bucket = os.getenv("S3_BUCKET", "cu002-videos")
-            self.access_key = os.getenv("S3_ACCESS_KEY", "minioadmin")
-            self.secret_key = os.getenv("S3_SECRET_KEY", "minioadmin")
+            self.access_key = os.getenv("S3_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER")
+            self.secret_key = os.getenv("S3_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD")
             self.region = "us-east-1"
             self.use_ssl = False
         self._client = None
 
     def _get_client(self):
+        missing = [name for name, value in (("S3_ENDPOINT", self.endpoint), ("S3_ACCESS_KEY", self.access_key), ("S3_SECRET_KEY", self.secret_key)) if not value]
+        if missing:
+            raise RuntimeError(f"MinIO configuration missing required values: {', '.join(missing)}")
         if self._client is None:
             import boto3
             from botocore.config import Config
@@ -83,7 +86,7 @@ class MinioStorageAdapter:
     def obtener_url_firmada(self, ruta: str, expiracion_minutos: int = 60) -> str:
         return self.generate_signed_url(ruta, expiracion_minutos) or ""
 
-    # ---- Protocol compat (CloudStorageAdapter) ----
+    # ---- Protocolo de almacenamiento ----
     def upload_video(self, file_path: str | Path, video_id: str, content_type: str = "video/mp4", metadata=None) -> Optional[str]:
         key = f"videos/{video_id}{Path(file_path).suffix or '.mp4'}"
         return self.upload_file(str(file_path), key, content_type)
@@ -132,12 +135,11 @@ class MinioStorageAdapter:
             logger.warning("MinIO presigned fallo %s: %s", blob_name, e)
             return None
 
-    def generate_signed_url_from_gcs_uri(self, gcs_uri: str, expiration_minutes: int = 60) -> Optional[str]:
-        # gcs_uri es s3://bucket/key o gs://bucket/key
-        key = gcs_uri.split(f"{self.bucket}/")[-1] if self.bucket in gcs_uri else gcs_uri.split("/")[-1]
+    def generate_signed_url_from_storage_uri(self, storage_uri: str, expiration_minutes: int = 60) -> Optional[str]:
+        key = storage_uri.split(f"{self.bucket}/")[-1] if self.bucket in storage_uri else storage_uri.split("/")[-1]
         # si es s3://, extrae key
-        if "://" in gcs_uri:
-            parts = gcs_uri.split("://", 1)[1]
+        if "://" in storage_uri:
+            parts = storage_uri.split("://", 1)[1]
             # parts = bucket/key
             if "/" in parts:
                 key = parts.split("/", 1)[1]
@@ -184,8 +186,8 @@ class MinioStorageAdapter:
         except Exception as e:
             return {"bucket": self.bucket, "error": str(e)}
 
-    def get_gcs_uri(self, gcs_path: str) -> str:
-        return f"s3://{self.bucket}/{gcs_path.lstrip('/')}"
+    def get_storage_uri(self, storage_path: str) -> str:
+        return f"s3://{self.bucket}/{storage_path.lstrip('/')}"
 
     def download_video(self, video_id: str, destination_path: str, extension: str = "mp4") -> Optional[str]:
         key = f"videos/{video_id}.{extension}"
@@ -193,9 +195,5 @@ class MinioStorageAdapter:
         return destination_path if ok else None
 
     # alias compat
-    def get_signed_url(self, gcs_path: str, expiration_minutes: int = 60) -> Optional[str]:
-        return self.generate_signed_url(gcs_path, expiration_minutes)
-
-
-CloudStorageAdapter = MinioStorageAdapter  # alias para compat imports
-GCPStorage = MinioStorageAdapter
+    def get_signed_url(self, storage_path: str, expiration_minutes: int = 60) -> Optional[str]:
+        return self.generate_signed_url(storage_path, expiration_minutes)

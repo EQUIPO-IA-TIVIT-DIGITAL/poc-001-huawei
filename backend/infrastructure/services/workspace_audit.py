@@ -4,10 +4,13 @@ Registra todas las operaciones CRUD con contexto completo
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
-from google.cloud import firestore
 from flask import request
+
+from infrastructure.db.session import SessionLocal
+from infrastructure.db.models import WorkspaceAuditModel
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +28,8 @@ class WorkspaceAuditAction:
 class WorkspaceAuditLogger:
     """
     Logger de auditoría para operaciones de workspaces
-    
-    Registra en Firestore colección 'workspace_audit_logs' con estructura:
+
+    Registra en la tabla 'workspace_audit_logs' (PostgreSQL/SQLAlchemy) con estructura:
     {
         'id': str,
         'timestamp': str (ISO 8601),
@@ -41,23 +44,9 @@ class WorkspaceAuditLogger:
         'error_message': str (opcional)
     }
     """
-    
+
     COLLECTION_NAME = 'workspace_audit_logs'
-    
-    @staticmethod
-    def _get_db() -> Optional[firestore.Client]:
-        """Obtiene cliente de Firestore"""
-        try:
-            from config.gcp_config import GCPConfig
-            from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-            
-            adapter = FirestoreAdapter(GCPConfig())
-            if adapter.is_available():
-                return adapter.db
-        except Exception as e:
-            logger.error(f"Error obteniendo Firestore para auditoría: {e}")
-        return None
-    
+
     @staticmethod
     def _get_request_context() -> Dict[str, Any]:
         """Obtiene contexto de la petición HTTP"""
@@ -70,10 +59,9 @@ class WorkspaceAuditLogger:
                 context['endpoint'] = request.endpoint
                 context['method'] = request.method
         except RuntimeError:
-            # Fuera de contexto de request
             pass
         return context
-    
+
     @staticmethod
     def log_create(
         usuario: str,
@@ -85,7 +73,7 @@ class WorkspaceAuditLogger:
     ) -> bool:
         """
         Registra creación de workspace
-        
+
         Args:
             usuario: Username del creador
             workspace_id: ID del workspace creado
@@ -93,7 +81,7 @@ class WorkspaceAuditLogger:
             workspace_data: Datos completos del workspace
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
@@ -112,7 +100,7 @@ class WorkspaceAuditLogger:
             success=success,
             error_message=error_message
         )
-    
+
     @staticmethod
     def log_update(
         usuario: str,
@@ -125,7 +113,7 @@ class WorkspaceAuditLogger:
     ) -> bool:
         """
         Registra actualización de workspace
-        
+
         Args:
             usuario: Username del usuario
             workspace_id: ID del workspace
@@ -134,11 +122,10 @@ class WorkspaceAuditLogger:
             new_data: Datos nuevos
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
-        # Detectar campos modificados
         cambios = {}
         for key in new_data:
             if key in old_data and old_data[key] != new_data[key]:
@@ -146,7 +133,7 @@ class WorkspaceAuditLogger:
                     'old': old_data[key],
                     'new': new_data[key]
                 }
-        
+
         return WorkspaceAuditLogger._log_event(
             accion=WorkspaceAuditAction.UPDATED,
             usuario=usuario,
@@ -156,7 +143,7 @@ class WorkspaceAuditLogger:
             success=success,
             error_message=error_message
         )
-    
+
     @staticmethod
     def log_delete(
         usuario: str,
@@ -169,7 +156,7 @@ class WorkspaceAuditLogger:
     ) -> bool:
         """
         Registra eliminación de workspace
-        
+
         Args:
             usuario: Username del usuario
             workspace_id: ID del workspace eliminado
@@ -178,7 +165,7 @@ class WorkspaceAuditLogger:
             accion_videos: Qué se hizo con los videos
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
@@ -194,7 +181,7 @@ class WorkspaceAuditLogger:
             success=success,
             error_message=error_message
         )
-    
+
     @staticmethod
     def log_duplicate(
         usuario: str,
@@ -207,7 +194,7 @@ class WorkspaceAuditLogger:
     ) -> bool:
         """
         Registra duplicación de workspace
-        
+
         Args:
             usuario: Username del usuario
             workspace_original_id: ID del workspace original
@@ -216,7 +203,7 @@ class WorkspaceAuditLogger:
             workspace_nuevo_nombre: Nombre del workspace duplicado
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
@@ -232,7 +219,7 @@ class WorkspaceAuditLogger:
             success=success,
             error_message=error_message
         )
-    
+
     @staticmethod
     def log_restore(
         usuario: str,
@@ -243,14 +230,14 @@ class WorkspaceAuditLogger:
     ) -> bool:
         """
         Registra restauración de workspace (soft delete)
-        
+
         Args:
             usuario: Username del usuario
             workspace_id: ID del workspace restaurado
             workspace_nombre: Nombre del workspace
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
@@ -263,7 +250,7 @@ class WorkspaceAuditLogger:
             success=success,
             error_message=error_message
         )
-    
+
     @staticmethod
     def _log_event(
         accion: str,
@@ -275,8 +262,8 @@ class WorkspaceAuditLogger:
         error_message: Optional[str]
     ) -> bool:
         """
-        Registra un evento de auditoría en Firestore
-        
+        Registra un evento de auditoría en la tabla workspace_audit_logs
+
         Args:
             accion: Tipo de acción
             usuario: Username del usuario
@@ -285,20 +272,13 @@ class WorkspaceAuditLogger:
             cambios: Diccionario con detalles del cambio
             success: Si la operación fue exitosa
             error_message: Mensaje de error si falló
-            
+
         Returns:
             True si se registró correctamente
         """
         try:
-            db = WorkspaceAuditLogger._get_db()
-            if not db:
-                logger.warning("Firestore no disponible - auditoría no registrada")
-                return False
-            
-            # Obtener contexto HTTP
             request_context = WorkspaceAuditLogger._get_request_context()
-            
-            # Crear documento de auditoría
+
             audit_log = {
                 'timestamp': datetime.now().isoformat(),
                 'usuario': usuario,
@@ -309,20 +289,30 @@ class WorkspaceAuditLogger:
                 'success': success,
                 **request_context
             }
-            
+
             if error_message:
                 audit_log['error_message'] = error_message
-            
-            # Guardar en Firestore
-            db.collection(WorkspaceAuditLogger.COLLECTION_NAME).add(audit_log)
-            
+
+            db = SessionLocal()
+            try:
+                db.add(WorkspaceAuditModel(
+                    id=str(uuid.uuid4()),
+                    usuario=usuario,
+                    workspace_id=workspace_id,
+                    accion=accion,
+                    data=audit_log,
+                ))
+                db.commit()
+            finally:
+                db.close()
+
             logger.info(f"📝 Auditoría registrada: {accion} - {workspace_nombre} por {usuario}")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Error registrando auditoría: {e}", exc_info=True)
             return False
-    
+
     @staticmethod
     def get_workspace_history(
         workspace_id: str,
@@ -330,33 +320,32 @@ class WorkspaceAuditLogger:
     ) -> list:
         """
         Obtiene historial de auditoría de un workspace
-        
+
         Args:
             workspace_id: ID del workspace
             limit: Cantidad máxima de registros
-            
+
         Returns:
             Lista de eventos de auditoría ordenados por timestamp descendente
         """
         try:
-            db = WorkspaceAuditLogger._get_db()
-            if not db:
-                return []
-            
-            query = (
-                db.collection(WorkspaceAuditLogger.COLLECTION_NAME)
-                .where(filter=firestore.FieldFilter('workspace_id', '==', workspace_id))
-                .order_by('timestamp', direction=firestore.Query.DESCENDING)
-                .limit(limit)
-            )
-            
-            docs = query.stream()
-            return [doc.to_dict() for doc in docs]
-            
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(WorkspaceAuditModel)
+                    .filter(WorkspaceAuditModel.workspace_id == workspace_id)
+                    .order_by(WorkspaceAuditModel.created_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [r.data for r in rows]
+            finally:
+                db.close()
+
         except Exception as e:
             logger.error(f"Error obteniendo historial de auditoría: {e}")
             return []
-    
+
     @staticmethod
     def get_user_history(
         usuario: str,
@@ -364,29 +353,28 @@ class WorkspaceAuditLogger:
     ) -> list:
         """
         Obtiene historial de auditoría de un usuario
-        
+
         Args:
             usuario: Username del usuario
             limit: Cantidad máxima de registros
-            
+
         Returns:
             Lista de eventos de auditoría ordenados por timestamp descendente
         """
         try:
-            db = WorkspaceAuditLogger._get_db()
-            if not db:
-                return []
-            
-            query = (
-                db.collection(WorkspaceAuditLogger.COLLECTION_NAME)
-                .where(filter=firestore.FieldFilter('usuario', '==', usuario))
-                .order_by('timestamp', direction=firestore.Query.DESCENDING)
-                .limit(limit)
-            )
-            
-            docs = query.stream()
-            return [doc.to_dict() for doc in docs]
-            
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(WorkspaceAuditModel)
+                    .filter(WorkspaceAuditModel.usuario == usuario)
+                    .order_by(WorkspaceAuditModel.created_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+                return [r.data for r in rows]
+            finally:
+                db.close()
+
         except Exception as e:
             logger.error(f"Error obteniendo historial de usuario: {e}")
             return []

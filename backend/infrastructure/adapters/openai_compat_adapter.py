@@ -15,25 +15,38 @@ logger = logging.getLogger(__name__)
 class OpenAICompatAdapter:
     """Adapter OpenAI-compat: chat/vision/embeddings/transcribe."""
 
-    def __init__(self, base_url: str, api_key: str = "not-needed", default_model: str = "", timeout: int = 120):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str = "not-needed",
+        default_model: str = "",
+        timeout: int = 120,
+        default_headers: Optional[dict[str, str]] = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
         self.timeout = timeout
+        self.default_headers = default_headers or {}
         # lazy import para no romper si openai no instalado (tests)
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI  # type: ignore
-            self._client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=self.timeout)
+            self._client = OpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=self.timeout,
+                default_headers=self.default_headers or None,
+            )
         return self._client
 
     def is_available(self) -> bool:
         try:
             import httpx
             url = f"{self.base_url}/models"
-            headers = {"Authorization": f"Bearer {self.api_key}"}
+            headers = {"Authorization": f"Bearer {self.api_key}", **self.default_headers}
             r = httpx.get(url, headers=headers, timeout=5)
             return r.status_code < 500
         except Exception:
@@ -136,7 +149,7 @@ class OpenAICompatAdapter:
     def analyze_frames(self, prompt: str, frames_base64: list[str]) -> dict:
         return self.analyze_video_clip("", prompt, frames_base64)
 
-    def analyze_video_clip_safety(self, gcs_uri: str = "", descripcion: str = "", duracion: float = 0, contexto_workspace: str = "", metadata_workspace=None) -> dict:
+    def analyze_video_clip_safety(self, storage_uri: str = "", descripcion: str = "", duracion: float = 0, contexto_workspace: str = "", metadata_workspace=None) -> dict:
         prompt = f"Eres moderador experto. Describe y modera. Descripcion: '{descripcion[:200]}' Duración: {duracion:.0f}s Contexto workspace: {contexto_workspace} Categoría: {(metadata_workspace or {}).get('categoria','')} Retorna JSON {{contenido_apropiado:bool, relevante_al_workspace:bool, recomendacion:'aprobar'|'rechazar', confianza:0-1, razon_recomendacion:str, nivel_riesgo:'BAJO'|'MEDIO'|'ALTO'}}"
         j = self.vision(prompt, json_mode=True)
         return {
@@ -151,3 +164,84 @@ class OpenAICompatAdapter:
 
     def analyze_content_safety(self, frames_base64, descripcion, transcripcion="", duracion=0, contexto_workspace="", metadata_workspace=None) -> dict:
         return self.analyze_video_clip_safety("", descripcion, duracion, contexto_workspace, metadata_workspace)
+
+    def analyze_text_with_thinking(self, prompt: str) -> str:
+        """Compat shim GeminiAdapter: texto con razonamiento (max tokens alto, temp baja)."""
+        try:
+            return self.chat([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=8192)
+        except Exception as e:
+            logger.warning("analyze_text_with_thinking fallo: %s", e)
+            return ""
+
+    def analyze_multiple_clips_summary(self, all_events_analysis, video_metadata=None) -> dict:
+        """Compat shim GeminiAdapter: correlación cruzada de eventos vía JSON mode.
+        Retorna {'success': False} en fallo; el caller usa su fallback básico."""
+        if not getattr(self, "disponible", False):
+            return {'success': False}
+        try:
+            events_summary = [
+                {
+                    "evento": i + 1,
+                    "timestamp": f"{ev.get('timestamp_inicio', 0):.0f}s - {ev.get('timestamp_fin', 0):.0f}s",
+                    "descripcion": ev.get("descripcion", "")[:200],
+                    "personas": ev.get("personas_count", 0),
+                    "vehiculos": ev.get("vehiculos_count", 0),
+                    "objetos": ev.get("objetos_detectados", [])[:10],
+                    "nivel_riesgo": ev.get("nivel_riesgo", "bajo"),
+                    "acciones": ev.get("acciones_detectadas", [])[:5],
+                }
+                for i, ev in enumerate((all_events_analysis or [])[:40])
+            ]
+            prompt = (
+                "Eres analista de seguridad. Correlaciona los eventos de un video de vigilancia.\n"
+                "Retorna ÚNICAMENTE JSON con claves: "
+                "nivel_riesgo_global (BAJO/MEDIO/ALTO/CRITICO), resumen_ejecutivo (str), "
+                "personas_total_estimado (int), vehiculos_total_estimado (int), "
+                "patrones_detectados (list[str]), recomendaciones_seguridad (list[str]).\n"
+                f"Metadatos video: {json.dumps(video_metadata or {}, ensure_ascii=False)[:500]}\n"
+                f"EVENTOS:\n{json.dumps(events_summary, indent=2, ensure_ascii=False)}\n"
+            )
+            text = self.chat([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, max_tokens=4096)
+            j = json.loads(text)
+            if isinstance(j, dict) and j:
+                return {"success": True, "analisis_cruzado": {
+                    "nivel_riesgo_global": j.get("nivel_riesgo_global", "BAJO"),
+                    "resumen_ejecutivo": j.get("resumen_ejecutivo", ""),
+                    "personas_total_estimado": j.get("personas_total_estimado", 0),
+                    "vehiculos_total_estimado": j.get("vehiculos_total_estimado", 0),
+                    "patrones_detectados": j.get("patrones_detectados", []),
+                    "recomendaciones_seguridad": j.get("recomendaciones_seguridad", []),
+                }}
+            return {'success': False}
+        except Exception as e:
+            logger.warning("analyze_multiple_clips_summary fallo: %s", e)
+            return {'success': False}
+
+    def validar_contexto(self, frames_base64: list[str], contexto_usuario: str) -> dict:
+        prompt = (
+            "Determina si las imágenes son relevantes al contexto indicado. "
+            "Responde solo JSON con es_relevante (bool), razon (str) y confianza (0-1).\n"
+            f"Contexto: {contexto_usuario}"
+        )
+        try:
+            result = self.vision(prompt, frames_base64, json_mode=True)
+            return {
+                "es_relevante": bool(result.get("es_relevante", False)),
+                "razon": result.get("razon", ""),
+                "confianza": float(result.get("confianza", 0)),
+            }
+        except Exception as e:
+            logger.warning("validar_contexto fallo: %s", e)
+            return {"es_relevante": False, "razon": "IA no disponible", "confianza": 0}
+
+    def analizar_escena_detallada(self, frames_base64: list[str], contexto_usuario: str) -> dict:
+        prompt = (
+            "Analiza detalladamente las imágenes de seguridad según el contexto indicado. "
+            "Responde solo JSON con descripcion, nivel_riesgo, personas, objetos, acciones y alertas.\n"
+            f"Contexto: {contexto_usuario}"
+        )
+        try:
+            return {"success": True, "analisis": self.vision(prompt, frames_base64, json_mode=True)}
+        except Exception as e:
+            logger.warning("analizar_escena_detallada fallo: %s", e)
+            return {"success": False, "error": str(e), "analisis": {}}

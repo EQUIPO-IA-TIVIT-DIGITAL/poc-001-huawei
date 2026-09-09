@@ -13,14 +13,24 @@ class SecurityQueryEngine:
     Motor de consultas sobre base de datos COMPLETA de eventos
     """
     
-    def __init__(self, firestore_service, gemini_service):
+    def __init__(self, firestore_service=None, gemini_service=None):
         """
         Args:
-            firestore_service: Servicio de Firestore
-            gemini_service: Servicio de Gemini para interpretar preguntas
+            firestore_service: Legacy (sin uso; los eventos viven en PostgreSQL)
+            gemini_service: Gateway de IA (por defecto el local 32B)
         """
         self.firestore = firestore_service
         self.gemini = gemini_service
+
+    def _get_repo(self):
+        from infrastructure.repositories.security_video_repository import SecurityVideoRepository
+        return SecurityVideoRepository()
+
+    def _get_gemini(self):
+        if self.gemini is None:
+            from infrastructure.adapters.ai_gateway import get_ai_gateway
+            self.gemini = get_ai_gateway()
+        return self.gemini
         
     def query(self, video_id: str, pregunta: str) -> Dict[str, Any]:
         """
@@ -68,20 +78,11 @@ class SecurityQueryEngine:
         }
     
     def _get_all_events(self, video_id: str) -> List[Dict[str, Any]]:
-        """Obtiene TODOS los eventos del video desde Firestore"""
+        """Obtiene TODOS los eventos del video desde PostgreSQL"""
         try:
-            # Query a la colección security_events
-            from google.cloud.firestore_v1.base_query import FieldFilter
-            events_ref = self.firestore.db.collection('security_events')
-            query = events_ref.where(filter=FieldFilter('security_video_id', '==', video_id)).order_by('timestamp_inicio')
-            
-            events = []
-            for doc in query.stream():
-                event_data = doc.to_dict()
-                event_data['id'] = doc.id
-                events.append(event_data)
-            
-            return events
+            repo = self._get_repo()
+            eventos = repo.obtener_eventos_video(video_id)
+            return [repo._evento_to_dict(e) for e in eventos]
         except Exception as e:
             logger.error(f"Error obteniendo eventos: {e}")
             return []
@@ -118,7 +119,12 @@ Responde SOLO con un JSON válido con este formato:
 }}
 """
             
-            response = self.gemini.generate_text(prompt)
+            response = self._get_gemini().chat(
+                [{"role": "user", "content": prompt}],
+                json_mode=True,
+                temperature=0,
+                max_tokens=1024,
+            )
             
             # Parsear respuesta JSON
             import json
@@ -264,7 +270,12 @@ Instrucciones:
 Respuesta:
 """
             
-            response = self.gemini.generate_text(prompt)
+            response = self._get_gemini().chat(
+                [{"role": "user", "content": prompt}],
+                json_mode=False,
+                temperature=0.4,
+                max_tokens=1024,
+            )
             return response.strip()
             
         except Exception as e:

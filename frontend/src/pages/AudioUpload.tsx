@@ -173,7 +173,7 @@ export default function AudioUpload() {
       const analysisId = initResponse.analysis_id;
 
       // Fase 2: Subir archivo
-      // El upload directo a GCS requiere CORS configurado en el bucket para el
+      // El upload directo requiere CORS configurado en el almacenamiento para el
       // origen actual. En desarrollo (localhost) y en producción con proxy, se
       // usa siempre la ruta segura a través del backend.
       setUploadPhase('Subiendo archivo...');

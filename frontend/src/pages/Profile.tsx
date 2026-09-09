@@ -16,7 +16,7 @@ const changePasswordSchema = z
         current_password: z.string().min(1, 'Ingresa tu contraseña actual'),
         new_password: z
             .string()
-            .min(6, 'La contraseña debe tener al menos 6 caracteres')
+            .min(8, 'La contraseña debe tener al menos 8 caracteres')
             .regex(/[A-Z]/, 'Incluye al menos una mayúscula')
             .regex(/[0-9]/, 'Incluye al menos un número'),
         confirm_password: z.string().min(1, 'Confirma tu nueva contraseña'),
@@ -29,7 +29,7 @@ const changePasswordSchema = z
 type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 
 export default function Profile() {
-    const { user, verifySession } = useAuth();
+    const { user, verifySession, updateUser } = useAuth();
     const [nombreCompleto, setNombreCompleto] = useState(user?.nombre || '');
     const [email, setEmail] = useState(user?.email || ''); // Note: Email might not be in user object if not returned by login
     const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
@@ -57,7 +57,7 @@ export default function Profile() {
 
     const watchedNewPassword = watch('new_password') || '';
     const passwordChecks = [
-        { label: 'Mínimo 6 caracteres', valid: watchedNewPassword.length >= 6 },
+        { label: 'Mínimo 8 caracteres', valid: watchedNewPassword.length >= 8 },
         { label: 'Al menos una mayúscula', valid: /[A-Z]/.test(watchedNewPassword) },
         { label: 'Al menos un número', valid: /[0-9]/.test(watchedNewPassword) },
     ];
@@ -98,18 +98,17 @@ export default function Profile() {
             return await apiRequest('/api/v1/auth/profile', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    nombre_completo: nombreCompleto || user?.nombre || '',
-                    email: email || user?.email || '',
-                    foto_url: ''
-                })
+                body: JSON.stringify({ remove_photo: true })
             });
         },
         onSuccess: () => {
-            authService.updateLocalUser({ foto_url: '' });
+            updateUser({ foto_url: '' });
             setProfileSuccess("Foto eliminada correctamente");
             setTimeout(() => setProfileSuccess(null), 3000);
-            window.location.reload();
+            void verifySession();
+        },
+        onError: (error: any) => {
+            alert(error.message || 'Error al eliminar la foto');
         }
     });
 
@@ -387,7 +386,7 @@ export default function Profile() {
                                     <Input
                                         type={showNewPwd ? 'text' : 'password'}
                                         {...register('new_password')}
-                                        placeholder="Mínimo 6 caracteres"
+                                        placeholder="Mínimo 8 caracteres"
                                         className="bg-slate-50/50 border-slate-200/60 focus:border-red-400 focus:ring-4 focus:ring-red-500/10 rounded-full py-6 pr-12 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
                                     />
                                     <button

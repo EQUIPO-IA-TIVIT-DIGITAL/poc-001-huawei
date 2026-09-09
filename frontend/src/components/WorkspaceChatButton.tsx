@@ -14,7 +14,7 @@ interface WorkspaceChatButtonProps {
 export function WorkspaceChatButton({ workspaceId, workspaceName = '', variant = 'secondary', onContextImproved, className = '', isContextualized = false }: WorkspaceChatButtonProps) {
     const [chatOpen, setChatOpen] = useState(false);
 
-    let baseClasses = "px-3 py-2 rounded-lg font-medium transition-all flex items-center justify-center gap-2";
+    const baseClasses = "px-3 py-2 rounded-lg font-medium transition-all flex items-center justify-center gap-2";
     let variantClasses = "";
 
     switch (variant) {

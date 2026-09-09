@@ -23,8 +23,8 @@ class VideoDecider:
         es_exhaustivo = metadata_workspace.get("es_exhaustivo", False)
         
         # Obtener GCS URI del video (necesario para Vertex AI)
-        gcs_uri = video.metadatos_ia.get("gcs_uri")
-        video_path = gcs_uri if gcs_uri else video.ruta_archivo
+        storage_uri = video.metadatos_ia.get("storage_uri")
+        video_path = storage_uri if storage_uri else video.ruta_archivo
         
         decision_final = None
         if es_exhaustivo:
@@ -98,7 +98,7 @@ class VideoDecider:
                 categorias_prohibidas=categorias_prohibidas
             )
 
-            if not self.gemini or not getattr(self.gemini, 'client', None):
+            if not self.gemini or not self.gemini.is_available():
                 return self._analisis_fallback_vision(contexto)
 
             system_prompt = """Eres el moderador de contenido de AccessFan, plataforma de videos UGC para TIVIT Latam.
@@ -130,30 +130,12 @@ FLUJO DE DECISIÓN:
 
             full_prompt = f"{system_prompt}\\n\\n{prompt}"
 
-            from google.genai import types as _types
-            response = self.gemini._retry_with_backoff(
-                self.gemini.client.models.generate_content,
-                model=self.gemini._model_name,
-                contents=full_prompt,
-                config=_types.GenerateContentConfig(
-                    max_output_tokens=2048,
-                    response_mime_type="application/json",
-                ),
+            text = self.gemini.chat(
+                [{"role": "user", "content": full_prompt}],
+                json_mode=True,
+                temperature=0.1,
+                max_tokens=2048,
             )
-            # response.text puede ser None con thinking models en Vertex AI;
-            # extraer texto de candidates como fallback robusto
-            text = response.text
-            if not text and response.candidates:
-                candidate = response.candidates[0]
-                finish_reason = getattr(candidate, 'finish_reason', None)
-                logger.warning(f"Decisor: response.text vacío, finish_reason={finish_reason}")
-                content = getattr(candidate, 'content', None)
-                parts = getattr(content, 'parts', None) or []
-                for part in parts:
-                    part_text = getattr(part, 'text', None)
-                    if part_text:
-                        text = part_text
-                        break
             if not text:
                 logger.warning("Decisor Gemini devolvió respuesta vacía, usando fallback")
                 return self._analisis_fallback_vision(contexto)
@@ -437,23 +419,17 @@ CONSIDERACIONES FINALES:
             if not nombre_limpio:
                 nombre_limpio = nombre_base
             etiquetas = contexto.get("etiquetas", [])[:5]
-            if not self.gemini or not getattr(self.gemini, 'client', None):
+            if not self.gemini or not self.gemini.is_available():
                 return self._generar_titulo_fallback(nombre_limpio, etiquetas)
             prompt = f"""Genera un título corto y descriptivo (máx 60 chars) para un video.
 Nombre: {nombre_limpio} | Etiquetas: {', '.join(etiquetas) or 'N/A'} | Duración: {contexto.get('duracion_segundos', 'N/A')}s
 Reglas: conciso, sin emojis, en español, sin extensión. Responde SOLO el título."""
             try:
-                from google.genai import types as _types
-                response = self.gemini._retry_with_backoff(
-                    self.gemini.client.models.generate_content,
-                    model=self.gemini._model_name,
-                    contents=prompt,
-                    config=_types.GenerateContentConfig(
-                        max_output_tokens=256,
-                        # thinking_config removido
-                    ),
-                )
-                titulo = response.text.strip().strip("\"'")
+                titulo = self.gemini.chat(
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                    max_tokens=256,
+                ).strip().strip("\"'")
                 return titulo[:80] if len(titulo) > 80 else titulo
             except Exception:
                 return self._generar_titulo_fallback(nombre_limpio, etiquetas)

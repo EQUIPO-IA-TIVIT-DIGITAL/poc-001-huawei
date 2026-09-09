@@ -15,7 +15,7 @@ export interface Video {
     video_url?: string;
     thumbnail_url?: string;
     duracion_segundos?: number;
-    gcs_uri?: string;
+    storage_uri?: string;
     metadatos_ia?: any;
     razon_rechazo?: string;
 }

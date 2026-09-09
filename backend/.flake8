@@ -1,0 +1,8 @@
+[flake8]
+max-line-length = 120
+extend-ignore = E203,E501,W293,E303
+select = E9,F821,F822,F823
+exclude =
+    .venv,
+    __pycache__,
+    alembic,

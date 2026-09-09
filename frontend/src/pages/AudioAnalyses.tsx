@@ -297,7 +297,7 @@ export default function AudioAnalyses() {
                 const isProc = audioAnalysisService.isProcessing(analysis.estado);
                 const friendlyTitle = getFriendlyTitle(analysis);
                 const contextSnippet = getContextSnippet(analysis);
-                const canPlayInline = Boolean(analysis.audio_gcs_url && analysis.audio_gcs_url.startsWith('http'));
+                const canPlayInline = Boolean(analysis.audio_url && analysis.audio_url.startsWith('http'));
                 const showPlayer = Boolean(expandedPlayerById[analysis.id]) && canPlayInline;
                 const statusConfig = getStatusConfig(analysis.estado);
 
@@ -379,7 +379,7 @@ export default function AudioAnalyses() {
                             className="mb-4 ml-12 overflow-hidden"
                           >
                             <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl">
-                              <audio controls preload="none" className="w-full" src={analysis.audio_gcs_url} />
+                              <audio controls preload="none" className="w-full" src={analysis.audio_url} />
                             </div>
                           </motion.div>
                         )}

@@ -1,6 +1,6 @@
 """
 Servicio de compresión de video para optimizar análisis
-Comprime videos a 720p antes de enviar a GCS y análisis de IA
+Comprime videos a 720p antes de enviar al almacenamiento y al análisis de IA
 """
 import subprocess
 import logging
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class VideoCompressor:
     """
     Comprime videos a 720p para reducir tiempos de upload y análisis.
-    Gemini Vision no necesita 4K; 720p es suficiente para detección.
+    La IA local no necesita 4K; 720p es suficiente para detección.
     """
 
     def __init__(self):

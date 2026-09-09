@@ -52,17 +52,50 @@ class AnalysisCacheManager:
     
     def __init__(self):
         """Inicializa el gestor de caché"""
-        self.gcs_storage = None
+        self._storage = None
+        self._is_minio = False
         self._init_storage()
     
     def _init_storage(self):
-        """Inicializa el servicio de GCS"""
+        """Inicializa el servicio de almacenamiento local"""
         try:
-            from infrastructure.adapters.gcp_storage import GCSStorageAdapter
-            self.gcs_storage = GCSStorageAdapter()
-            logger.info("✅ GCS Storage inicializado para caché")
+            from config.app_config import AppConfig
+            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+            if backend == "minio":
+                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                self._storage = MinioStorageAdapter(AppConfig)
+                self._is_minio = True
+            else:
+                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                self._storage = FilesystemStorageAdapter()
+            logger.info("Storage inicializado para caché")
         except Exception as e:
-            logger.error(f"❌ Error inicializando GCS Storage: {e}")
+            logger.error(f"Error inicializando Storage: {e}")
+
+    def _download_json(self, blob_name: str):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            if self._is_minio:
+                self._storage.download_file(blob_name, tmp_path)
+            else:
+                import shutil
+                from pathlib import Path
+                shutil.copy2(str(Path(self._storage.base_dir) / blob_name), tmp_path)
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                return None
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    def _upload_json(self, blob_name: str, data):
+        json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self._storage.upload_from_bytes(json_bytes, blob_name, content_type="application/json")
     
     def load_cache(self, video_id: str) -> Dict[str, Any]:
         """
@@ -74,19 +107,18 @@ class AnalysisCacheManager:
         Returns:
             Caché como diccionario (vacío si no existe)
         """
-        # Primero intentar cargar desde memoria local (modo desarrollo)
         if hasattr(self, '_local_cache') and video_id in self._local_cache:
-            logger.info(f"✅ Caché cargado desde memoria local: {video_id}")
+            logger.info(f"Caché cargado desde memoria local: {video_id}")
             return self._local_cache[video_id]
         
-        if not self.gcs_storage:
-            logger.warning("⚠️ GCS Storage no disponible, retornando caché vacío")
+        if not self._storage:
+            logger.warning("Storage no disponible, retornando caché vacío")
             return self._empty_cache()
         
-        gcs_path = f"security_videos/{video_id}/metadata/analysis_cache.json"
+        blob_name = f"security_videos/{video_id}/metadata/analysis_cache.json"
         
         try:
-            cache_data = self.gcs_storage.download_json(gcs_path)
+            cache_data = self._download_json(blob_name)
             
             if cache_data:
                 logger.info(f"✅ Caché cargado: {video_id} ({len(cache_data.get('clips_analizados', {}))} clips)")
@@ -101,7 +133,7 @@ class AnalysisCacheManager:
     
     def save_cache(self, video_id: str, cache_data: Dict[str, Any]) -> bool:
         """
-        Guarda el caché de análisis en GCS
+        Guarda el caché de análisis en almacenamiento
         
         Args:
             video_id: ID del video
@@ -110,33 +142,24 @@ class AnalysisCacheManager:
         Returns:
             True si se guardó correctamente
         """
-        if not self.gcs_storage:
-            logger.warning("⚠️ GCS Storage no disponible, caché no persistido")
-            # En modo desarrollo/testing sin GCS, guardamos en memoria
+        if not self._storage:
+            logger.warning("Storage no disponible, caché no persistido")
             if not hasattr(self, '_local_cache'):
                 self._local_cache = {}
             self._local_cache[video_id] = cache_data
-            logger.info(f"💾 Caché guardado en memoria local: {video_id}")
+            logger.info(f"Caché guardado en memoria local: {video_id}")
             return True
         
-        gcs_path = f"security_videos/{video_id}/metadata/analysis_cache.json"
+        blob_name = f"security_videos/{video_id}/metadata/analysis_cache.json"
         
         try:
-            # Actualizar timestamp
             cache_data['ultima_actualizacion'] = datetime.utcnow().isoformat()
-            
-            # Subir a GCS
-            self.gcs_storage.upload_json(
-                gcs_path,
-                cache_data,
-                content_type='application/json'
-            )
-            
-            logger.info(f"✅ Caché guardado: {video_id}")
+            self._upload_json(blob_name, cache_data)
+            logger.info(f"Caché guardado: {video_id}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error guardando caché: {e}")
+            logger.error(f"Error guardando caché: {e}")
             return False
     
     def add_query_record(

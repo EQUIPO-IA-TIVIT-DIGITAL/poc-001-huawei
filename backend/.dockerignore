@@ -47,15 +47,12 @@ uploads/
 .gitignore
 .gitattributes
 
-# GCP Credentials — NUNCA en la imagen
-gcp-credentials.json
+# Credential files — never include them in the image
 *-credentials.json
 service-account*.json
 *.json.old
 *.json.backup
 
-# Google Cloud SDK (no necesario en imagen Docker)
-google-cloud-sdk/
 
 # Docker
 .dockerignore
@@ -90,9 +87,7 @@ Jenkinsfile
 .env.local
 .env.*.local
 
-# GCP Credentials — NEVER bake into images
-gcp-credentials.json
-tivit-cu002-*.json
+# Credential files — NEVER bake into images
 *.p12
 *.pem
 service-account*.json

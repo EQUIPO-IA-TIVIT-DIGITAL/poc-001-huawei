@@ -9,11 +9,16 @@ import {
     Users, Image, Globe
 } from 'lucide-react';
 import { Button } from './ui/button';
+import { getApiBaseUrl } from '../lib/backendUrl';
 
 interface SocioVideoDetailsModalProps {
     video: Video | null;
     open: boolean;
     onOpenChange: (open: boolean) => void;
+}
+
+function resolveVideoUrl(url: string): string {
+    return url.startsWith('/') ? `${getApiBaseUrl()}${url}` : url;
 }
 
 export function SocioVideoDetailsModal({ video, open, onOpenChange }: SocioVideoDetailsModalProps) {
@@ -29,9 +34,8 @@ export function SocioVideoDetailsModal({ video, open, onOpenChange }: SocioVideo
             setVideoError(false);
             // Usar video_url de metadatos directamente si existe
             const metaUrl = video.metadatos_ia?.video_url || video.video_url;
-            const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001').replace(/\/$/, '');
             if (metaUrl) {
-                setVideoUrl(metaUrl.startsWith('/') ? `${apiBase}${metaUrl}` : metaUrl);
+                setVideoUrl(resolveVideoUrl(metaUrl));
             } else {
                 // Fallback: buscar URL firmada
                 fetchSignedUrl(video.id);
@@ -46,9 +50,7 @@ export function SocioVideoDetailsModal({ video, open, onOpenChange }: SocioVideo
         try {
             const res = await videoService.getSignedUrl(videoId);
             if (res && res.signed_url) {
-                const apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001').replace(/\/$/, '');
-                const url = res.signed_url;
-                setVideoUrl(url.startsWith('/') ? `${apiBase}${url}` : url);
+                setVideoUrl(resolveVideoUrl(res.signed_url));
             }
         } catch (e) {
             console.error('Error getting signed URL:', e);

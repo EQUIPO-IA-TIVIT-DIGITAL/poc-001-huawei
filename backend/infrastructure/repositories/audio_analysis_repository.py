@@ -1,9 +1,9 @@
 """
-Repositorio Firestore para Análisis de Audio
+Repositorio local (PostgreSQL + SQLAlchemy + pgvector) para Análisis de Audio
 
-Colecciones:
-- audio_analyses: Análisis principales
-- audio_segments: Segmentos de transcripción con timestamps
+Tablas:
+- audio_analyses: Análisis principales (id, usuario, estado, s3_uri, language, result JSON)
+- audio_segments: Segmentos de transcripción con timestamps y embedding pgvector
 
 Patrón: Singleton con RLock (thread-safe) — mismo patrón que OperationalAnalysisRepository.
 """
@@ -11,22 +11,65 @@ Patrón: Singleton con RLock (thread-safe) — mismo patrón que OperationalAnal
 import logging
 from typing import Optional, List, Tuple, Dict, Any
 from threading import RLock
-from google.cloud import firestore
 import re
+import json
 
-from domain.entities import AudioAnalysis, AudioSegment
+from sqlalchemy import select, delete
+
+from domain.entities import AudioAnalysis, AudioSegment, EstadoAudioAnalysis
+from infrastructure.db.session import SessionLocal
+from infrastructure.db.models import AudioAnalysisModel, AudioSegmentModel
 
 logger = logging.getLogger(__name__)
 
 
-def _query_requires_index(error: Exception) -> bool:
-    """Detecta errores de Firestore por índice compuesto faltante."""
-    text = str(error).lower()
-    return 'requires an index' in text or 'create_composite' in text or 'index' in text
+def _to_embedding_list(vector) -> Optional[List[float]]:
+    """Convierte cualquier objeto vectorial (legacy, lista, tupla) a lista de floats."""
+    if vector is None:
+        return None
+    if isinstance(vector, (list, tuple)):
+        return [float(x) for x in vector]
+    for attr in ('values', 'list', 'to_list'):
+        if hasattr(vector, attr):
+            val = getattr(vector, attr)
+            if callable(val):
+                val = val()
+            return [float(x) for x in val]
+    try:
+        return [float(x) for x in vector]
+    except Exception:
+        return None
+
+
+def _analysis_model_to_entity(m: AudioAnalysisModel) -> AudioAnalysis:
+    """Reconstruye AudioAnalysis desde el modelo, tolerando campos faltantes."""
+    data: Dict[str, Any] = {}
+    if m.result:
+        data.update(m.result)
+    data['id'] = data.get('id') or m.id
+    data['usuario'] = data.get('usuario') or (m.usuario or '')
+    data['estado'] = data.get('estado') or (m.estado or 'pending')
+    data['detected_language'] = data.get('detected_language') or (m.language or 'es')
+    return AudioAnalysis.from_dict(data)
+
+
+def _segment_model_to_entity(m: AudioSegmentModel) -> AudioSegment:
+    """Reconstruye AudioSegment desde el modelo."""
+    d = {
+        'id': m.id,
+        'analysis_id': m.analysis_id,
+        'text': m.text or '',
+        'start_time': m.start_time if m.start_time is not None else 0.0,
+        'end_time': m.end_time if m.end_time is not None else 0.0,
+        'speaker': m.speaker or '',
+    }
+    if m.embedding is not None:
+        d['embedding'] = list(m.embedding)
+    return AudioSegment.from_dict(d)
 
 
 class AudioAnalysisRepository:
-    """Repositorio Firestore para análisis de audio (Singleton thread-safe)"""
+    """Repositorio local (PostgreSQL/SQLAlchemy + pgvector) para análisis de audio (Singleton thread-safe)"""
 
     _instance = None
     _lock_cls = RLock()
@@ -42,16 +85,14 @@ class AudioAnalysisRepository:
         if self._initialized:
             return
         self._lock_repo = RLock()
-        from config.gcp_config import GCPConfig
-        gcp_config = GCPConfig()
         try:
-            self.db = firestore.Client(project=gcp_config.PROJECT_ID)
-            logger.info(f"✅ AudioAnalysisRepository inicializado (Firestore project={gcp_config.PROJECT_ID})")
+            conn = SessionLocal()
+            conn.execute(select(1))
+            conn.close()
+            logger.info("✅ AudioAnalysisRepository inicializado (PostgreSQL + SQLAlchemy + pgvector)")
         except Exception as e:
-            logger.error(f"❌ Error inicializando Firestore client: {e}")
-            # Fallback sin project_id especificado
-            self.db = firestore.Client()
-            logger.info("✅ AudioAnalysisRepository inicializado (Firestore sin project_id)")
+            logger.error(f"❌ Error inicializando sesión SQLAlchemy: {e}")
+            logger.info("✅ AudioAnalysisRepository inicializado (session lazy)")
         self._initialized = True
 
     # ═══════════════════════════════════════════════════
@@ -64,7 +105,6 @@ class AudioAnalysisRepository:
     def _get_cache(self, analysis_id: str) -> Optional['AudioAnalysis']:
         """Intenta obtener análisis desde Redis cache (SCA-04)."""
         try:
-            import json
             from infrastructure.services.job_queue import get_redis_connection
             raw = get_redis_connection().get(f"audio:analysis:{analysis_id}")
             if raw:
@@ -76,8 +116,6 @@ class AudioAnalysisRepository:
     def _set_cache(self, analysis: 'AudioAnalysis') -> None:
         """Guarda análisis en Redis cache con TTL según estado (SCA-04)."""
         try:
-            import json
-            from domain.entities import EstadoAudioAnalysis
             from infrastructure.services.job_queue import get_redis_connection
             ttl = (
                 self._CACHE_TTL_COMPLETED
@@ -103,7 +141,6 @@ class AudioAnalysisRepository:
     def _publicar_estado_redis(self, analysis_id: str, data: dict) -> None:
         """Publica cambio de estado en canal Redis para notificar al stream SSE (SCA-01)."""
         try:
-            import json
             from infrastructure.services.job_queue import get_redis_connection
             get_redis_connection().publish(
                 f"audio:status:{analysis_id}",
@@ -120,7 +157,7 @@ class AudioAnalysisRepository:
         progress: float,
         error_msg: str = "",
     ) -> None:
-        """Actualiza solo los campos de progreso en Firestore sin read-then-write (OPT-03)."""
+        """Actualiza solo los campos de progreso (estado/current_phase/progress) sin reescritura completa (OPT-03)."""
         data: Dict[str, Any] = {
             'estado': estado.value if hasattr(estado, 'value') else estado,
             'current_phase': phase,
@@ -130,10 +167,27 @@ class AudioAnalysisRepository:
             data['error_message'] = error_msg
         with self._lock_repo:
             try:
-                self.db.collection('audio_analyses').document(analysis_id).update(data)
+                db = SessionLocal()
+                try:
+                    m = db.get(AudioAnalysisModel, analysis_id)
+                    if m is not None:
+                        result = dict(m.result or {})
+                        if 'estado' in data:
+                            m.estado = str(data['estado'])
+                        if 'current_phase' in data:
+                            result['current_phase'] = data['current_phase']
+                        if 'progress' in data:
+                            result['progress'] = data['progress']
+                        if 'error_message' in data:
+                            result['error_message'] = data['error_message']
+                        m.result = result
+                        db.commit()
+                    else:
+                        logger.warning(f"⚠️ update parcial falló para {analysis_id}: no existe fila")
+                finally:
+                    db.close()
             except Exception as e:
-                logger.warning(f"⚠️ update parcial falló para {analysis_id}, usando set merge: {e}")
-                self.db.collection('audio_analyses').document(analysis_id).set(data, merge=True)
+                logger.warning(f"⚠️ update parcial falló para {analysis_id}: {e}")
             self._invalidar_cache(analysis_id)
             self._publicar_estado_redis(analysis_id, data)
 
@@ -145,16 +199,28 @@ class AudioAnalysisRepository:
         """Guarda o actualiza un análisis de audio"""
         with self._lock_repo:
             try:
-                doc_ref = self.db.collection('audio_analyses').document(analysis.id)
                 data_dict = analysis.to_dict()
-                doc_ref.set(data_dict)
-                logger.debug(f"✅ Análisis de audio guardado: {analysis.id} (estado={analysis.estado.value if hasattr(analysis.estado, 'value') else analysis.estado})")
+                new_estado = str(data_dict.get('estado', 'pending'))
+                db = SessionLocal()
+                try:
+                    m = db.get(AudioAnalysisModel, analysis.id)
+                    if m is None:
+                        m = AudioAnalysisModel(id=analysis.id)
+                        db.add(m)
+                    m.usuario = data_dict.get('usuario', '')
+                    m.estado = new_estado
+                    m.language = str(data_dict.get('detected_language', 'es') or 'es')[:16]
+                    m.result = data_dict
+                    db.commit()
+                finally:
+                    db.close()
+                logger.debug(f"✅ Análisis de audio guardado: {analysis.id} (estado={new_estado})")
                 self._invalidar_cache(analysis.id)
                 self._publicar_estado_redis(analysis.id, {
-                    'estado': analysis.estado.value if hasattr(analysis.estado, 'value') else analysis.estado,
-                    'current_phase': analysis.current_phase,
-                    'progress': analysis.progress,
-                    'error_message': analysis.error_message,
+                    'estado': new_estado,
+                    'current_phase': data_dict.get('current_phase'),
+                    'progress': data_dict.get('progress'),
+                    'error_message': data_dict.get('error_message'),
                 })
                 return analysis
             except Exception as e:
@@ -167,82 +233,60 @@ class AudioAnalysisRepository:
         if cached is not None:
             return cached
         with self._lock_repo:
-            doc_ref = self.db.collection('audio_analyses').document(analysis_id)
-            doc = doc_ref.get()
-            if doc.exists:
-                analysis = AudioAnalysis.from_dict(doc.to_dict())
-                self._set_cache(analysis)
-                return analysis
-            return None
+            db = SessionLocal()
+            try:
+                m = db.get(AudioAnalysisModel, analysis_id)
+                if m is not None:
+                    analysis = _analysis_model_to_entity(m)
+                    self._set_cache(analysis)
+                    return analysis
+                return None
+            finally:
+                db.close()
 
     def listar_analisis_por_usuario(
         self,
         usuario: str,
         limit: int = 50
     ) -> List[AudioAnalysis]:
-        """Lista análisis de un usuario específico, ordenados por fecha."""
+        """Lista análisis de un usuario específico, ordenados por fecha (created_at DESC)."""
         with self._lock_repo:
+            db = SessionLocal()
             try:
-                query = self.db.collection('audio_analyses').where(
-                    filter=firestore.FieldFilter('usuario', '==', usuario)
-                )
-                docs = (
-                    query
-                    .order_by('created_at', direction=firestore.Query.DESCENDING)
+                rows = (
+                    db.query(AudioAnalysisModel)
+                    .filter(AudioAnalysisModel.usuario == usuario)
+                    .order_by(AudioAnalysisModel.created_at.desc())
                     .limit(limit)
-                    .get()
+                    .all()
                 )
-                return [AudioAnalysis.from_dict(doc.to_dict()) for doc in docs]
-            except Exception as e:
-                if 'index' in str(e).lower():
-                    from infrastructure.services.job_queue import is_queue_required
-                    if is_queue_required():
-                        logger.error(
-                            f"❌ Índice Firestore compuesto faltante en audio_analyses "
-                            f"(usuario, created_at DESC). Crear en Firebase Console. Error: {e}"
-                        )
-                    else:
-                        logger.warning(f"⚠️ Índice compuesto no disponible, usando fallback: {e}")
-                    query = self.db.collection('audio_analyses').where(
-                        filter=firestore.FieldFilter('usuario', '==', usuario)
-                    )
-                    docs = query.limit(limit).get()
-                    results = [AudioAnalysis.from_dict(doc.to_dict()) for doc in docs]
-                    results.sort(key=lambda a: a.created_at or '', reverse=True)
-                    return results[:limit]
-                raise
+                return [_analysis_model_to_entity(r) for r in rows]
+            finally:
+                db.close()
 
     def eliminar_analisis(self, analysis_id: str) -> bool:
-        """Elimina un análisis y sus segmentos usando batches seguros de 450 (OPT-06)"""
+        """Elimina un análisis y sus segmentos (OPT-06)."""
         with self._lock_repo:
-            BATCH_SIZE = 450
-            total_segs = 0
-
-            # stream() evita cargar todos los docs en memoria; batches de 450 cumplen límite Firestore
-            seg_iter = (
-                self.db.collection('audio_segments')
-                .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                .stream()
-            )
-            chunk: list = []
-            for seg_doc in seg_iter:
-                chunk.append(seg_doc.reference)
-                if len(chunk) >= BATCH_SIZE:
-                    b = self.db.batch()
-                    for ref in chunk:
-                        b.delete(ref)
-                    b.commit()
-                    total_segs += len(chunk)
-                    chunk = []
-
-            # Último batch — incluir también el documento principal del análisis
-            b = self.db.batch()
-            for ref in chunk:
-                b.delete(ref)
-            total_segs += len(chunk)
-            b.delete(self.db.collection('audio_analyses').document(analysis_id))
-            b.commit()
-
+            db = SessionLocal()
+            try:
+                total_segs = (
+                    db.query(AudioSegmentModel)
+                    .filter(AudioSegmentModel.analysis_id == analysis_id)
+                    .count()
+                )
+                db.execute(
+                    delete(AudioSegmentModel).where(AudioSegmentModel.analysis_id == analysis_id)
+                )
+                m = db.get(AudioAnalysisModel, analysis_id)
+                if m is not None:
+                    db.delete(m)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"❌ Error eliminando análisis {analysis_id}: {e}")
+                return False
+            finally:
+                db.close()
             self._invalidar_cache(analysis_id)
             logger.info(f"✅ Análisis de audio eliminado: {analysis_id} ({total_segs} segmentos)")
             return True
@@ -252,34 +296,38 @@ class AudioAnalysisRepository:
     # ═══════════════════════════════════════════════════
 
     def guardar_segmentos_batch(self, segmentos: List[AudioSegment], analysis_id: str) -> int:
-        """Guarda segmentos de transcripción en batch (max 450 por batch de Firestore)"""
+        """Guarda segmentos de transcripción en batch (upsert por PK)."""
         with self._lock_repo:
             total_guardados = 0
-            BATCH_SIZE = 450
-
-            for i in range(0, len(segmentos), BATCH_SIZE):
-                chunk = segmentos[i:i + BATCH_SIZE]
-                batch = self.db.batch()
-
-                for segmento in chunk:
-                    doc_ref = self.db.collection('audio_segments').document(segmento.id)
-                    batch.set(doc_ref, segmento.to_dict())
-
-                batch.commit()
-                total_guardados += len(chunk)
-
+            db = SessionLocal()
+            try:
+                for segmento in segmentos:
+                    m = db.get(AudioSegmentModel, segmento.id)
+                    if m is None:
+                        m = AudioSegmentModel(id=segmento.id)
+                        db.add(m)
+                    m.analysis_id = analysis_id
+                    m.start_time = float(segmento.start_time or 0.0)
+                    m.end_time = float(segmento.end_time or 0.0)
+                    m.text = segmento.text or ''
+                    m.speaker = (segmento.speaker or 'SPEAKER_1')[:64]
+                    embedding = getattr(segmento, 'embedding', None)
+                    m.embedding = _to_embedding_list(embedding)
+                    total_guardados += 1
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
             return total_guardados
 
     def obtener_segmentos(self, analysis_id: str) -> List[AudioSegment]:
-        """Obtiene todos los segmentos de un análisis, ordenados por timestamp"""
+        """Obtiene todos los segmentos de un análisis, ordenados por timestamp."""
         with self._lock_repo:
-            docs = (
-                self.db.collection('audio_segments')
-                .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                .get()
-            )
-            segments = [AudioSegment.from_dict(doc.to_dict()) for doc in docs]
-            segments.sort(key=lambda s: s.start_time)
+            rows = self._query_segmentos_ordenados(analysis_id)
+            segments = [_segment_model_to_entity(r) for r in rows]
+            segments.sort(key=lambda s: (s.start_time, s.id))
             return segments
 
     def obtener_segmentos_paginados(
@@ -297,71 +345,34 @@ class AudioAnalysisRepository:
         """
         with self._lock_repo:
             per_page = max(1, min(per_page, 200))
-
+            db = SessionLocal()
             try:
-                query = (
-                    self.db.collection('audio_segments')
-                    .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                    .order_by('start_time', direction=firestore.Query.ASCENDING)
-                    .order_by('id', direction=firestore.Query.ASCENDING)
+                q = (
+                    db.query(AudioSegmentModel)
+                    .filter(AudioSegmentModel.analysis_id == analysis_id)
+                    .order_by(AudioSegmentModel.start_time.asc(), AudioSegmentModel.id.asc())
                 )
 
-                # Soporta dos modos:
-                # 1) cursor-based (recomendado): cursor="<start_time>|<id>"
-                # 2) page-based legacy: aplica offset para compatibilidad
                 if cursor:
                     try:
                         start_time_raw, last_id = cursor.split('|', 1)
                         start_time = float(start_time_raw)
-                        query = query.start_after({'start_time': start_time, 'id': last_id})
+                        q = q.filter(
+                            (AudioSegmentModel.start_time > start_time)
+                            | (
+                                (AudioSegmentModel.start_time == start_time)
+                                & (AudioSegmentModel.id > last_id)
+                            )
+                        )
                     except Exception:
                         logger.warning(f"⚠️ Cursor inválido para análisis {analysis_id}: {cursor}")
                 elif page and page > 1:
-                    query = query.offset((page - 1) * per_page)
+                    q = q.offset((page - 1) * per_page)
 
-                docs = query.limit(per_page).get()
-                segments = [AudioSegment.from_dict(doc.to_dict()) for doc in docs]
-            except Exception as e:
-                if not _query_requires_index(e):
-                    raise
-
-                from infrastructure.services.job_queue import is_queue_required
-                if is_queue_required():
-                    logger.error(
-                        f"❌ Índice Firestore compuesto faltante en audio_segments "
-                        f"(analysis_id, start_time ASC, id ASC). Crear en Firebase Console. "
-                        f"Análisis: {analysis_id[:8]}. Error: {e}"
-                    )
-                else:
-                    logger.warning(
-                        f"⚠️ Índice compuesto no disponible para segmentos de {analysis_id}, "
-                        f"usando fallback en memoria: {e}"
-                    )
-                docs = (
-                    self.db.collection('audio_segments')
-                    .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                    .get()
-                )
-                all_segments = [AudioSegment.from_dict(doc.to_dict()) for doc in docs]
-                all_segments.sort(key=lambda s: (s.start_time, s.id))
-
-                start_idx = 0
-                if cursor:
-                    try:
-                        start_time_raw, last_id = cursor.split('|', 1)
-                        start_time = float(start_time_raw)
-                        for i, seg in enumerate(all_segments):
-                            if (seg.start_time, seg.id) > (start_time, last_id):
-                                start_idx = i
-                                break
-                        else:
-                            start_idx = len(all_segments)
-                    except Exception:
-                        logger.warning(f"⚠️ Cursor inválido para análisis {analysis_id}: {cursor}")
-                elif page and page > 1:
-                    start_idx = max(0, (page - 1) * per_page)
-
-                segments = all_segments[start_idx:start_idx + per_page]
+                rows = q.limit(per_page).all()
+                segments = [_segment_model_to_entity(r) for r in rows]
+            finally:
+                db.close()
 
             total = self._obtener_total_segmentos(analysis_id)
 
@@ -378,7 +389,7 @@ class AudioAnalysisRepository:
         query: str,
         limit: int = 200,
     ) -> List[AudioSegment]:
-        """Busca texto en una lista de segmentos ya cargados (sin roundtrip a Firestore)."""
+        """Busca texto en una lista de segmentos ya cargados (sin roundtrip a DB)."""
         query_lower = query.lower()
         limit = max(1, min(limit, 1000))
 
@@ -394,7 +405,7 @@ class AudioAnalysisRepository:
     def buscar_en_transcripcion(self, analysis_id: str, query: str, limit: int = 200) -> List[AudioSegment]:
         """
         Busca texto en los segmentos de transcripción de un análisis.
-        Búsqueda case-insensitive en memoria (Firestore no soporta full-text search nativo).
+        Búsqueda case-insensitive (no hay full-text search nativo; similar a Firestore).
 
         Args:
             analysis_id: ID del análisis
@@ -409,66 +420,22 @@ class AudioAnalysisRepository:
         with self._lock_repo:
             query_lower = query.lower()
             limit = max(1, min(limit, 1000))
-            search_terms = self._extract_search_terms(query_lower)
-
-            if search_terms:
-                try:
-                    docs = (
-                        self.db.collection('audio_segments')
-                        .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                        .where(filter=firestore.FieldFilter('search_terms', 'array_contains_any', search_terms[:10]))
-                        .order_by('start_time', direction=firestore.Query.ASCENDING)
-                        .limit(min(limit * 20, 2000))
-                        .stream()
-                    )
-
-                    matching: List[AudioSegment] = []
-                    for doc in docs:
-                        segment = AudioSegment.from_dict(doc.to_dict())
-                        if query_lower in segment.text.lower():
-                            matching.append(segment)
-                            if len(matching) >= limit:
-                                break
-
-                    if matching:
-                        return matching
-                except Exception as e:
-                    logger.warning(f"⚠️ Búsqueda indexada no disponible, fallback lineal: {e}")
-
+            db = SessionLocal()
             try:
-                docs = (
-                    self.db.collection('audio_segments')
-                    .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                    .order_by('start_time', direction=firestore.Query.ASCENDING)
-                    .limit(min(limit * 20, 5000))
-                    .stream()
+                rows = (
+                    db.query(AudioSegmentModel)
+                    .filter(
+                        AudioSegmentModel.analysis_id == analysis_id,
+                        AudioSegmentModel.text.ilike(f"%{query_lower}%"),
+                    )
+                    .order_by(AudioSegmentModel.start_time.asc())
+                    .limit(limit)
+                    .all()
                 )
-
-                matching: List[AudioSegment] = []
-                for doc in docs:
-                    segment = AudioSegment.from_dict(doc.to_dict())
-                    if query_lower in segment.text.lower():
-                        matching.append(segment)
-                        if len(matching) >= limit:
-                            break
-
-                return matching
+                return [_segment_model_to_entity(r) for r in rows]
             except Exception as e:
-                if not _query_requires_index(e):
-                    raise
-
-                logger.warning(
-                    f"⚠️ Índice compuesto no disponible para búsqueda en {analysis_id}, "
-                    f"usando fallback en memoria: {e}"
-                )
-                docs = (
-                    self.db.collection('audio_segments')
-                    .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                    .get()
-                )
-                all_segments = [AudioSegment.from_dict(doc.to_dict()) for doc in docs]
-                all_segments.sort(key=lambda s: (s.start_time, s.id))
-
+                logger.warning(f"⚠️ Búsqueda SQL falló para {analysis_id}, fallback en memoria: {e}")
+                all_segments = self.obtener_segmentos(analysis_id)
                 matching: List[AudioSegment] = []
                 for segment in all_segments:
                     if query_lower in segment.text.lower():
@@ -476,6 +443,20 @@ class AudioAnalysisRepository:
                         if len(matching) >= limit:
                             break
                 return matching
+            finally:
+                db.close()
+
+    def _query_segmentos_ordenados(self, analysis_id: str):
+        db = SessionLocal()
+        try:
+            return (
+                db.query(AudioSegmentModel)
+                .filter(AudioSegmentModel.analysis_id == analysis_id)
+                .order_by(AudioSegmentModel.start_time.asc(), AudioSegmentModel.id.asc())
+                .all()
+            )
+        finally:
+            db.close()
 
     @staticmethod
     def _extract_search_terms(query: str) -> List[str]:
@@ -492,27 +473,39 @@ class AudioAnalysisRepository:
         return unique
 
     def _obtener_total_segmentos(self, analysis_id: str) -> int:
-        """Obtiene total de segmentos usando el documento principal como fuente rápida."""
+        """Obtiene total de segmentos usando el documento principal como fuente rápida, con fallback a count."""
         try:
-            analysis_doc = self.db.collection('audio_analyses').document(analysis_id).get()
-            if analysis_doc.exists:
-                total = int((analysis_doc.to_dict() or {}).get('total_segments', 0) or 0)
+            m = self._get_analysis_model(analysis_id)
+            if m is not None:
+                result = m.result or {}
+                total = result.get('total_segments', 0) or 0
                 if total > 0:
-                    return total
+                    return int(total)
         except Exception:
             pass
 
-        # Fallback para análisis antiguos sin total_segments — usa stream con select([])
-        # para no cargar todos los campos en memoria, solo iterar document references.
-        count = sum(
-            1 for _ in (
-                self.db.collection('audio_segments')
-                .where(filter=firestore.FieldFilter('analysis_id', '==', analysis_id))
-                .select([])
-                .stream()
-            )
-        )
-        return count
+        try:
+            db = SessionLocal()
+            try:
+                return (
+                    db.query(AudioSegmentModel)
+                    .filter(AudioSegmentModel.analysis_id == analysis_id)
+                    .count()
+                )
+            finally:
+                db.close()
+        except Exception:
+            return 0
+
+    def _get_analysis_model(self, analysis_id: str) -> Optional[AudioAnalysisModel]:
+        try:
+            db = SessionLocal()
+            try:
+                return db.get(AudioAnalysisModel, analysis_id)
+            finally:
+                db.close()
+        except Exception:
+            return None
 
     # ═══════════════════════════════════════════════════
     # VECTOR SEARCH (OPT-07)
@@ -521,13 +514,28 @@ class AudioAnalysisRepository:
     def actualizar_embedding_segmento(
         self, analysis_id: str, segment_id: str, vector
     ) -> None:
-        """Guarda el embedding vectorial en el campo 'embedding' del segmento."""
+        """Guarda el embedding vectorial en la columna pgvector 'embedding' del segmento."""
         with self._lock_repo:
-            doc_ref = (
-                self.db.collection('audio_segments')
-                .document(f"{analysis_id}_{segment_id}")
-            )
-            doc_ref.set({"embedding": vector}, merge=True)
+            db = SessionLocal()
+            try:
+                m = db.get(AudioSegmentModel, segment_id)
+                if m is None:
+                    m = AudioSegmentModel(
+                        id=segment_id,
+                        analysis_id=analysis_id,
+                        start_time=0.0,
+                        end_time=0.0,
+                    )
+                    db.add(m)
+                else:
+                    m.analysis_id = analysis_id
+                m.embedding = _to_embedding_list(vector)
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"⚠️ Error actualizando embedding de segmento {segment_id}: {e}")
+            finally:
+                db.close()
 
     def buscar_por_vector(
         self,
@@ -537,24 +545,50 @@ class AudioAnalysisRepository:
         limit: int = 20,
     ) -> List[AudioSegment]:
         """
-        Búsqueda semántica por similaridad vectorial en Firestore (find_nearest).
+        Búsqueda semántica por similaridad vectorial con cosine distance (pgvector `<=>`).
         Filtra por analysis_id para limitar el espacio de búsqueda.
-        Retorna lista vacía si el índice no está disponible.
+        Retorna lista vacía si no hay embeddings o el query no se puede ejecutar.
         """
-        from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
+        query_embedding = _to_embedding_list(vector)
+        if not query_embedding:
+            return []
         with self._lock_repo:
             try:
-                collection = self.db.collection('audio_segments')
-                vector_query = collection.where(
-                    filter=firestore.FieldFilter('analysis_id', '==', analysis_id)
-                ).find_nearest(
-                    vector_field='embedding',
-                    query_vector=vector,
-                    distance_measure=distance_measure,
-                    limit=limit,
-                )
-                results = [AudioSegment.from_dict(doc.to_dict()) for doc in vector_query.stream()]
-                return results
+                db = SessionLocal()
+                try:
+                    distance = self._build_distance_expr(
+                        AudioSegmentModel.embedding, query_embedding, distance_measure
+                    )
+                    stmt = (
+                        select(AudioSegmentModel)
+                        .where(
+                            AudioSegmentModel.analysis_id == analysis_id,
+                            AudioSegmentModel.embedding.isnot(None),
+                            distance < 1.0,
+                        )
+                        .order_by(distance.asc())
+                        .limit(limit)
+                    )
+                    rows = db.execute(stmt).scalars().all()
+                    return [_segment_model_to_entity(r) for r in rows]
+                finally:
+                    db.close()
             except Exception as e:
-                logger.warning(f"⚠️ buscar_por_vector error ({analysis_id[:8]}): {e}")
+                logger.warning(f"⚠️ buscar_por_vector error ({str(analysis_id)[:8]}): {e}")
                 return []
+
+    @staticmethod
+    def _build_distance_expr(embedding_col, query_embedding: List[float], distance_measure):
+        """Mapea DistanceMeasure legacy (COSINE/EUCLIDEAN/DOT_PRODUCT) al operador pgvector."""
+        measure = None
+        if isinstance(distance_measure, str):
+            measure = distance_measure.upper()
+        elif hasattr(distance_measure, 'name'):
+            measure = str(distance_measure.name).upper()
+        elif hasattr(distance_measure, 'value'):
+            measure = str(distance_measure.value).upper()
+        if measure in ('EUCLIDIAN', 'EUCLIDEAN', 'L2'):
+            return embedding_col.l2_distance(query_embedding)
+        if measure in ('DOT_PRODUCT', 'INNER_PRODUCT', 'DOT'):
+            return embedding_col.inner_product(query_embedding)
+        return embedding_col.cosine_distance(query_embedding)

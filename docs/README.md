@@ -4,7 +4,8 @@
 
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture, component layers, async pipeline, GCP configuration |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture, component layers and async pipeline |
+| [LOCAL_INFRASTRUCTURE.md](LOCAL_INFRASTRUCTURE.md) | Local deployment, required variables and operations |
 | [API.md](API.md) | Complete HTTP API reference for all endpoints |
 | [OPERATIONS.md](OPERATIONS.md) | Local development setup, environment variables, logging, observability |
 | [SECURITY_AND_COMPLIANCE.md](SECURITY_AND_COMPLIANCE.md) | Authentication, authorization, input validation, OWASP Top 10 mapping |
@@ -17,7 +18,7 @@
 
 ### New developers
 1. [ARCHITECTURE.md](ARCHITECTURE.md) — understand the system structure
-2. [OPERATIONS.md](OPERATIONS.md) — run it locally
+2. [LOCAL_INFRASTRUCTURE.md](LOCAL_INFRASTRUCTURE.md) — run the local stack
 
 ### API integration
 1. [API.md](API.md) — endpoint reference

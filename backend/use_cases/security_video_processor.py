@@ -123,22 +123,14 @@ class SecurityVideoProcessor:
         """Inicializa Gemini Vision bajo demanda"""
         if self.gemini_adapter is None:
             try:
-                from infrastructure.adapters.gemini_adapter import GeminiAdapter
-                self.gemini_adapter = GeminiAdapter()
+                from infrastructure.adapters.ai_gateway import get_ai_gateway
+                self.gemini_adapter = get_ai_gateway()
                 logger.info("✅ Gemini Vision inicializado")
             except Exception as e:
                 logger.error(f"❌ Error inicializando Gemini: {e}")
     
     def _init_video_intelligence(self):
-        """Inicializa Video Intelligence bajo demanda"""
-        if self.video_intelligence is None:
-            try:
-                from infrastructure.adapters.gcp_video_intelligence import VideoIntelligenceAdapter
-                from config.gcp_config import GCPConfig
-                self.video_intelligence = VideoIntelligenceAdapter(GCPConfig())
-                logger.info("✅ Video Intelligence inicializado")
-            except Exception as e:
-                logger.error(f"❌ Error inicializando Video Intelligence: {e}")
+        self.video_intelligence = None
     
     def _get_checkpoint(self, video: SecurityVideo) -> str:
         """
@@ -767,7 +759,7 @@ Responde SOLO en JSON sin markdown:
         DEFAULT_FPS = 30.0
         try:
             import cv2
-            local_path = video.metadata_tecnico.get('local_path') or video.gcs_path
+            local_path = video.metadata_tecnico.get('local_path') or video.storage_path
             if not local_path or not os.path.exists(local_path):
                 return DEFAULT_FPS
             cap = cv2.VideoCapture(local_path)
@@ -781,28 +773,30 @@ Responde SOLO en JSON sin markdown:
         return DEFAULT_FPS
 
     def _upload_report_to_gcs(self, local_path: str, video_id: str, formato: str) -> str:
-        """
-        Sube un reporte local a GCS y retorna la URI gs://.
-        Si GCS no está disponible, retorna la ruta local como fallback.
-        """
         try:
-            from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-            storage = CloudStorageAdapter()
+            from config.app_config import AppConfig
+            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+            if backend == "minio":
+                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                storage = MinioStorageAdapter(AppConfig)
+            else:
+                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                storage = FilesystemStorageAdapter()
             if not storage.is_available():
-                logger.warning("GCS no disponible, reporte solo en disco local: %s", local_path)
+                logger.warning("Storage no disponible, reporte solo en disco local: %s", local_path)
                 return local_path
 
             blob_name = f"reports/{video_id}/report_{video_id}.{formato}"
-            gcs_uri = storage.upload_file(local_path, blob_name)
-            if gcs_uri:
-                logger.info("Reporte subido a GCS: %s", gcs_uri)
+            url = storage.upload_file(local_path, blob_name)
+            if url:
+                logger.info("Reporte subido a storage: %s", url)
                 try:
                     os.remove(local_path)
                 except OSError:
                     pass
-                return gcs_uri
+                return url
         except Exception as e:
-            logger.error("Error subiendo reporte a GCS: %s", e)
+            logger.error("Error subiendo reporte: %s", e)
 
         return local_path
 
@@ -964,7 +958,7 @@ Responde SOLO en JSON sin markdown:
                 'nombre_camara': video.nombre_camara,
                 'ubicacion': video.ubicacion,
                 'duracion_segundos': video.duracion_segundos,
-                'ruta_gcs': video.ruta_gcs
+                'storage_path': video.storage_path
             })
             
             logger.info(f"📹 Video: {video.nombre_camara} - {video.ubicacion}")
@@ -1301,7 +1295,7 @@ Responde SOLO en JSON sin markdown:
         ]
         
         for i, clip in enumerate(clips[:5]):  # Limitar a 5 clips para costos
-            clip_url = clip.get("clip_url") or clip.get("ruta_gcs")
+            clip_url = clip.get("clip_url") or clip.get("storage_path")
             if not clip_url:
                 continue
             
@@ -1392,8 +1386,8 @@ Responde SOLO en JSON sin markdown:
         video.actualizar_estado(EstadoSecurityVideo.MOTION_DETECTING)
         self.repository.guardar_video(video)
         
-        # Detectar si es ruta local o GCS
-        video_path = video.ruta_gcs
+        # Detectar si es ruta local o de almacenamiento
+        video_path = video.storage_path
         temp_video_path = None
         is_local_file = False
         
@@ -1410,8 +1404,8 @@ Responde SOLO en JSON sin markdown:
                 logger.error(f"❌ Archivo local no encontrado: {expanded_path}")
                 return []
         else:
-            # Es una ruta GCS - descargar
-            temp_video_path = self.motion_detector.download_from_gcs(video_path)
+            # Es una ruta de almacenamiento: descargar.
+            temp_video_path = self.motion_detector.download_from_storage(video_path)
         
         if not temp_video_path:
             logger.error("❌ No se pudo obtener el video")
@@ -1457,16 +1451,16 @@ Responde SOLO en JSON sin markdown:
         # Crear directorio temporal para clips
         clips_dir = tempfile.mkdtemp(prefix="security_clips_")
         
-        # GCS path base para clips
-        gcs_base_path = f"{video.ruta_gcs.rsplit('/', 1)[0]}/clips/{video.id}"
+        # Ruta base de almacenamiento para clips.
+        storage_base_path = f"{video.storage_path.rsplit('/', 1)[0]}/clips/{video.id}"
         
         # Extraer clips
         clips = self.video_segmentation.batch_extract_clips(
             temp_video_path,
             segments,
             clips_dir,
-            upload_to_gcs=True,
-            gcs_base_path=gcs_base_path
+            upload_to_storage=True,
+            storage_base_path=storage_base_path
         )
         
         logger.info(f"✅ Clips extraídos: {len(clips)}")
@@ -1814,7 +1808,8 @@ Responde SOLO en formato JSON sin markdown:
                     metadata=metadata_safe,
                 )
                 
-                self.repository.guardar_evento(evento)
+                if not self.repository.guardar_evento(evento):
+                    raise RuntimeError(f"No se pudo persistir el evento {evento_id}")
                 eventos_guardados += 1
                 sec_logger.debug(f"✅ Evento {evento_id} guardado correctamente")
             
@@ -1848,23 +1843,27 @@ Responde SOLO en formato JSON sin markdown:
             
             if self.report_generator.save_text_report(video, eventos, txt_path):
                 logger.info(f"✅ Reporte TXT guardado: {txt_path}")
-                video.reporte_txt_url = txt_path  # Usar ruta local
-                
-                # Intentar subir a GCS si está disponible y no es test local
+                video.reporte_txt_url = txt_path
+
                 is_local_test = video.metadata_tecnico.get('is_local_test', False)
-                if not is_local_test and video.ruta_gcs.startswith('gs://'):
+                if not is_local_test:
                     try:
-                        from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-                        storage = CloudStorageAdapter()
+                        from config.app_config import AppConfig
+                        backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+                        if backend == "minio":
+                            from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                            storage = MinioStorageAdapter(AppConfig)
+                        else:
+                            from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                            storage = FilesystemStorageAdapter()
                         if storage.is_available():
-                            # Usar upload_video con content_type correcto
-                            txt_gcs_path = f"reportes/{video.id}/{txt_filename}"
-                            txt_url = storage.upload_video(txt_path, txt_gcs_path, content_type='text/plain')
+                            txt_storage_path = f"reportes/{video.id}/{txt_filename}"
+                            txt_url = storage.upload_file(txt_path, txt_storage_path, content_type='text/plain')
                             if txt_url:
                                 video.reporte_txt_url = txt_url
-                                logger.info(f"✅ Reporte TXT subido a GCS: {txt_url}")
+                                logger.info(f"✅ Reporte TXT subido a storage: {txt_url}")
                     except Exception as e:
-                        logger.warning(f"⚠️ No se pudo subir TXT a GCS: {e}")
+                        logger.warning(f"⚠️ No se pudo subir TXT a storage: {e}")
             
             # Generar reporte PDF MEJORADO (con imágenes y timeline)
             pdf_filename = f"reporte_{video.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -1903,16 +1902,15 @@ Responde SOLO en formato JSON sin markdown:
                 logger.info(f"✅ Reporte PDF MEJORADO guardado: {pdf_path}")
                 video.reporte_pdf_url = pdf_path
                 
-                # Intentar subir a GCS si está disponible y no es test local
-                if not is_local_test and video.ruta_gcs.startswith('gs://'):
+                if not is_local_test:
                     try:
-                        pdf_gcs_path = f"reportes/{video.id}/{pdf_filename}"
-                        pdf_url = storage.upload_video(pdf_path, pdf_gcs_path, content_type='application/pdf')
+                        pdf_storage_path = f"reportes/{video.id}/{pdf_filename}"
+                        pdf_url = storage.upload_file(pdf_path, pdf_storage_path, content_type='application/pdf')
                         if pdf_url:
                             video.reporte_pdf_url = pdf_url
-                            logger.info(f"✅ Reporte PDF subido a GCS: {pdf_url}")
+                            logger.info(f"✅ Reporte PDF subido a storage: {pdf_url}")
                     except Exception as e:
-                        logger.warning(f"⚠️ No se pudo subir PDF a GCS: {e}")
+                        logger.warning(f"⚠️ No se pudo subir PDF a storage: {e}")
             else:
                 logger.warning("⚠️ No se pudo generar PDF (ReportLab no disponible)")
             
@@ -2014,7 +2012,7 @@ Sistema TIVIT-CU002 Security Intelligence
                 'duracion_segundos': video.duracion_segundos,
                 'tiempo_procesamiento_segundos': video.tiempo_procesamiento_segundos,
                 'reporte_url': video.reporte_txt_url or video.reporte_pdf_url,
-                'video_url': video.ruta_gcs,
+                'video_url': video.storage_path,
             }
             
             # Separar eventos sospechosos de importantes

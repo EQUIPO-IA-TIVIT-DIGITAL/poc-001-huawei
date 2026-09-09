@@ -1,6 +1,6 @@
 """
-Repositorio de Usuarios con Firestore
-Persistencia permanente en Google Cloud Firestore
+Repositorio de Usuarios con persistencia local
+Cache en memoria + persistencia en PostgreSQL/SQLAlchemy
 """
 from typing import List, Optional, Dict, Tuple
 from threading import Lock
@@ -29,14 +29,14 @@ def _mask_identifier(value: str) -> str:
 
 class UsuarioRepositoryFirestore:
     """
-    Repositorio de usuarios con persistencia en Firestore.
+    Repositorio de usuarios con persistencia en la base de datos local.
     
     Implementa el patrón Singleton con cache en memoria para rendimiento.
-    Todos los cambios se persisten en Firestore automáticamente.
+    Todos los cambios se persisten en PostgreSQL/SQLAlchemy automáticamente.
     
-    Estructura en Firestore:
-    - socios/{username} → Usuarios con rol SOCIO
-    - administradores/{username} → Usuarios con rol ADMINISTRADOR
+    Estructura en la base de datos:
+    - tabla de usuarios → Usuarios con rol SOCIO
+    - tabla de usuarios → Usuarios con rol ADMINISTRADOR
     """
     
     _instance = None
@@ -52,7 +52,7 @@ class UsuarioRepositoryFirestore:
         return cls._instance
     
     def __init__(self):
-        """Inicializa el repositorio con conexión a Firestore"""
+        """Inicializa el repositorio con conexión a la base de datos local"""
         if self._initialized:
             return
         
@@ -62,27 +62,13 @@ class UsuarioRepositoryFirestore:
         self._firestore = None
         self._initialized = True
         
-        self._init_firestore()
         self._cargar_usuarios_desde_firestore()
     
     def _init_firestore(self):
-        """Inicializa la conexión a Firestore"""
-        try:
-            from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-            from config.gcp_config import GCPConfig
-            
-            self._firestore = FirestoreAdapter(GCPConfig())
-            
-            if self._firestore.is_available():
-                logger.info("✅ Repositorio de usuarios conectado a Firestore")
-            else:
-                logger.warning("⚠️ Firestore no disponible - usuarios solo en memoria")
-        except Exception as e:
-            logger.error(f"❌ Error conectando a Firestore: {e}")
-            self._firestore = None
+        self._firestore = None
     
     def _cargar_usuarios_desde_firestore(self):
-        """Carga usuarios existentes desde Firestore al cache"""
+        """Carga usuarios existentes desde la base de datos al cache"""
         if not self._firestore or not self._firestore.is_available():
             self._crear_usuarios_default()
             return
@@ -97,7 +83,7 @@ class UsuarioRepositoryFirestore:
                     self._cache[usuario.id] = usuario
                     self._cache_username[_normalize_username(usuario.username)] = usuario
             
-            logger.info(f"✅ Cargados {len(self._cache)} usuarios desde Firestore")
+            logger.info(f"✅ Cargados {len(self._cache)} usuarios desde la base de datos")
             
             # Si no hay usuarios, crear los por defecto
             if len(self._cache) == 0:
@@ -108,7 +94,7 @@ class UsuarioRepositoryFirestore:
             self._crear_usuarios_default()
     
     def _dict_to_usuario(self, data: Dict) -> Optional[Usuario]:
-        """Convierte diccionario de Firestore a Usuario"""
+        """Convierte fila de la base de datos a Usuario"""
         try:
             rol_str = data.get('rol', 'socio')
             rol = RolUsuario(rol_str) if isinstance(rol_str, str) else RolUsuario.SOCIO
@@ -121,8 +107,6 @@ class UsuarioRepositoryFirestore:
                 email=data.get('email', ''),
                 rol=rol,
                 activo=data.get('activo', True),
-                azure_id=data.get('azure_id', ''),
-                auth_provider=data.get('auth_provider', 'local'),
                 foto_url=data.get('foto_url', ''),
                 metadatos=data.get('metadatos', {}),
                 notificaciones=data.get('notificaciones', [])
@@ -140,7 +124,7 @@ class UsuarioRepositoryFirestore:
         env = os.getenv('FLASK_ENV', 'development')
         
         if env == 'production':
-            logger.info("⚠️ Producción: ejecuta init_firestore.py para crear usuarios")
+            logger.info("⚠️ Producción: ejecuta el script de seed de la base de datos para crear usuarios")
             return
         
         # Solo en desarrollo
@@ -160,7 +144,7 @@ class UsuarioRepositoryFirestore:
     
     def guardar(self, usuario: Usuario) -> Usuario:
         """
-        Guarda un usuario en Firestore y cache.
+        Guarda un usuario en la base de datos y cache.
         DEPRECATED: Usar guardar_atomic() para nuevos usuarios.
         
         Args:
@@ -174,16 +158,16 @@ class UsuarioRepositoryFirestore:
             self._cache[usuario.id] = usuario
             self._cache_username[_normalize_username(usuario.username)] = usuario
             
-            # Persistir en Firestore
+            # Persistir en la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     self._firestore.save_socio(usuario)
                     logger.info(
-                        "✅ Usuario guardado en Firestore: %s",
+                        "✅ Usuario guardado en la base de datos: %s",
                         _mask_identifier(_normalize_username(usuario.username)),
                     )
                 except Exception as e:
-                    logger.error(f"❌ Error guardando en Firestore: {e}")
+                    logger.error(f"❌ Error guardando en la base de datos: {e}")
             
             return usuario
     
@@ -208,7 +192,7 @@ class UsuarioRepositoryFirestore:
                 if _normalize_email(existing_user.email) == _normalize_email(usuario.email):
                     return False, "El email ya está registrado", None
             
-            # Intentar guardar en Firestore con transacción atómica
+            # Intentar guardar en la base de datos con transacción atómica
             if self._firestore and self._firestore.is_available():
                 success, error = self._firestore.save_socio_atomic(usuario)
                 
@@ -225,10 +209,10 @@ class UsuarioRepositoryFirestore:
                 )
                 return True, None, usuario
             else:
-                # Fallback: guardar solo en cache (modo sin Firestore)
+                # Fallback: guardar solo en cache (modo sin base de datos)
                 self._cache[usuario.id] = usuario
                 self._cache_username[_normalize_username(usuario.username)] = usuario
-                logger.warning("⚠️ Usuario guardado solo en cache (Firestore no disponible)")
+                logger.warning("⚠️ Usuario guardado solo en cache (base de datos no disponible)")
                 return True, None, usuario
     
     def crear(self, usuario: Usuario) -> Usuario:
@@ -248,7 +232,7 @@ class UsuarioRepositoryFirestore:
             if normalized_username in self._cache_username:
                 return self._cache_username[normalized_username]
             
-            # Si no está en cache, buscar en Firestore
+            # Si no está en cache, buscar en la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     # Buscar en socios
@@ -326,16 +310,16 @@ class UsuarioRepositoryFirestore:
             if normalized_username in self._cache_username:
                 del self._cache_username[_normalize_username(usuario.username)]
             
-            # Eliminar de Firestore
+            # Eliminar de la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     self._firestore.db.collection('socios').document(usuario.username).delete()
                     logger.info(
-                        "✅ Usuario eliminado de Firestore: %s",
+                        "✅ Usuario eliminado de la base de datos: %s",
                         _mask_identifier(_normalize_username(usuario.username)),
                     )
                 except Exception as e:
-                    logger.error(f"❌ Error eliminando de Firestore: {e}")
+                    logger.error(f"❌ Error eliminando de la base de datos: {e}")
             
             return True
     

@@ -19,7 +19,7 @@ def _video_to_entity(m: VideoModel) -> Video:
     v = Video(
         id=m.id,
         usuario=m.usuario,
-        ruta_archivo=m.s3_uri or m.gcs_uri or "",
+        ruta_archivo=m.s3_uri or m.storage_uri or "",
         descripcion=m.descripcion or m.titulo or "",
         metadatos_ia=m.metadatos or {},
         estado=estado,
@@ -30,8 +30,8 @@ def _video_to_entity(m: VideoModel) -> Video:
     # campos extra no en dataclass -> metadatos
     if m.s3_uri:
         v.metadatos_ia["s3_uri"] = m.s3_uri
-    if m.gcs_uri:
-        v.metadatos_ia["gcs_uri"] = m.gcs_uri
+    if m.storage_uri:
+        v.metadatos_ia["storage_uri"] = m.storage_uri
     return v
 
 
@@ -94,7 +94,7 @@ class SQLAlchemyVideoRepository:
             m.estado = est.value if hasattr(est, "value") else str(est)
             m.metadatos = getattr(video, "metadatos_ia", {}) or {}
             m.s3_uri = getattr(video, "ruta_archivo", "") or m.metadatos.get("s3_uri", "")
-            m.gcs_uri = m.metadatos.get("gcs_uri", "")
+            m.storage_uri = m.metadatos.get("storage_uri", "")
             m.duracion_segundos = float(getattr(video, "duracion_segundos", 0) or m.metadatos.get("duracion_segundos", 0) or 0)
             db.commit()
             db.refresh(m)

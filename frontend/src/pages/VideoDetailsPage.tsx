@@ -17,7 +17,7 @@ interface VideoDetails {
     titulo: string;
     descripcion: string;
     estado: string;
-    url?: string;
+    video_url?: string;
     fecha_carga?: string;
     fecha_procesamiento?: string;
     resultado_ia?: string;
@@ -28,9 +28,6 @@ interface VideoDetails {
     texto_detectado: string[];
     labels: any[];
 }
-
-// Fallback video
-const MOCK_VIDEO_URL = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
 
 export default function VideoDetailsPage() {
     const { videoId } = useParams({ from: '/app/video/$videoId' });
@@ -132,13 +129,27 @@ export default function VideoDetailsPage() {
 
                 {/* LEFT: Player */}
                 <div className="w-full md:w-3/5 bg-black flex flex-col relative group items-center justify-center">
-                    <video
-                        ref={videoRef}
-                        src={details.url || MOCK_VIDEO_URL}
-                        className="w-full h-full object-contain max-h-full"
-                        controls
-                        playsInline
-                    />
+                    {details.video_url ? (
+                        <video
+                            ref={videoRef}
+                            src={details.video_url}
+                            className="w-full h-full object-contain max-h-full"
+                            controls
+                            playsInline
+                        />
+                    ) : (
+                        <div className="flex flex-col items-center gap-3 px-6 text-center text-gray-300">
+                            <Video size={48} />
+                            <p className="font-medium text-white">
+                                {details.estado?.toLowerCase() === 'procesando'
+                                    ? 'El video sigue procesándose.'
+                                    : 'El video no está disponible.'}
+                            </p>
+                            <p className="text-sm text-gray-400">
+                                Intenta nuevamente cuando el procesamiento haya finalizado.
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {/* RIGHT: Data Panels */}

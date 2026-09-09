@@ -1,6 +1,6 @@
 """
 Servicio de Logging Centralizado - TIVIT Video
-Usa Cloud Logging en producción, consola con colores en desarrollo.
+Consola con colores en desarrollo, JSON en producción.
 Reemplaza todos los print() del proyecto.
 """
 import logging
@@ -85,37 +85,6 @@ class ColoredFormatter(logging.Formatter):
         return result
 
 
-class CloudLoggingHandler:
-    """Wrapper para Google Cloud Logging"""
-    
-    _client = None
-    _initialized = False
-    
-    @classmethod
-    def setup(cls, project_id: str = None) -> bool:
-        """Configura Cloud Logging"""
-        if cls._initialized:
-            return True
-        
-        try:
-            from google.cloud import logging as cloud_logging
-            
-            cls._client = cloud_logging.Client(project=project_id)
-            cls._client.setup_logging()
-            cls._initialized = True
-            return True
-            
-        except ImportError:
-            return False
-        except Exception as e:
-            logging.getLogger(__name__).warning("Cloud Logging no disponible: %s", e)
-            return False
-
-    @classmethod
-    def is_available(cls) -> bool:
-        return cls._initialized
-
-
 def _install_print_redirect() -> None:
     """Redirect print() to logger for stdout/stderr consistency."""
     global _print_redirect_installed
@@ -152,7 +121,7 @@ def setup_logging(app_name: str = "tivit-video") -> logging.Logger:
     """
     Configura logging centralizado.
     
-    - Producción: Cloud Logging (GCP) + archivo local
+    - Producción: JSON a archivo + consola
     - Desarrollo: Consola con colores + archivo local
     
     Args:
@@ -163,11 +132,10 @@ def setup_logging(app_name: str = "tivit-video") -> logging.Logger:
     """
     env = os.getenv('FLASK_ENV', 'development')
     log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-    log_file = os.getenv('LOG_FILE', './logs/app.log')
+    log_file = os.getenv('LOG_FILE', '')
     max_bytes = int(os.getenv('LOG_MAX_BYTES', str(10 * 1024 * 1024)))
     backup_count = int(os.getenv('LOG_BACKUP_COUNT', '5'))
     redirect_prints = os.getenv('LOG_REDIRECT_PRINTS', 'true').lower() == 'true'
-    project_id = os.getenv('GCP_PROJECT_ID')
     
     # Crear logger raíz
     logger = logging.getLogger()
@@ -217,22 +185,14 @@ def setup_logging(app_name: str = "tivit-video") -> logging.Logger:
         except Exception as e:
             logger.warning(f"No se pudo crear archivo de log: {e}")
     
-    # === Cloud Logging (solo en producción) ===
-    if env == 'production' and project_id:
-        if CloudLoggingHandler.setup(project_id):
-            logger.info("Cloud Logging enabled for project: %s", project_id)
-        else:
-            logger.warning("Cloud Logging unavailable, falling back to local logs")
-
     # Reducir ruido de librerias externas
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('google').setLevel(logging.WARNING)
     logging.getLogger('werkzeug').setLevel(logging.INFO)
 
     # Log inicial
     logger.info(
-        "%s startup | env=%s log_level=%s cloud_logging=%s",
-        app_name, env, log_level, CloudLoggingHandler.is_available()
+        "%s startup | env=%s log_level=%s",
+        app_name, env, log_level,
     )
 
     if redirect_prints:

@@ -1,7 +1,7 @@
 /**
  * Servicio de Compresión de Video usando FFmpeg.wasm
  * 
- * Comprime videos ANTES de subirlos a GCS para reducir tamaño y tiempo de upload
+ * Comprime videos antes de subirlos al almacenamiento para reducir tamaño y tiempo de carga
  * 
  * Resultados esperados:
  * - AVI 30GB → MP4 10GB (66% reducción)

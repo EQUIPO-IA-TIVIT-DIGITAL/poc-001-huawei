@@ -11,6 +11,7 @@ import { WorkspaceUploadModal } from '../components/WorkspaceUploadModal';
 import { BatchNotification } from '../components/BatchNotification';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { VideoDetailsModal } from '../components/VideoDetailsModal';
+import { getApiBaseUrl } from '../lib/backendUrl';
 
 export default function WorkspaceDetailPage() {
     const { id } = useParams({ strict: false }) as { id: string };
@@ -420,7 +421,7 @@ export default function WorkspaceDetailPage() {
                                             {/* Image overlay */}
                                             <img
                                                 crossOrigin="use-credentials"
-                                                src={`${(import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:5001'}/socio/thumbnail/${video.id}`}
+                                                src={`${getApiBaseUrl()}/socio/thumbnail/${video.id}`}
                                                 alt={video.nombre_archivo}
                                                 className="absolute inset-0 w-full h-full object-cover bg-slate-100 transition-transform duration-500 group-hover:scale-110"
                                                 onError={(e) => {

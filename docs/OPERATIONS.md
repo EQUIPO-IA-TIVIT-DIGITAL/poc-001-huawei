@@ -10,7 +10,7 @@ cp .env.example .env
 # Opcional: AI_API_BASE_URL/AI_API_KEY si usas ApiLLM remota (offline funciona sin esto)
 
 # 1. Pull modelos 32B (una vez con internet, ~70GB en volumen models)
-bash scripts/pull_models.sh
+bash backend/scripts/pull_models.sh
 
 # 2. Levantar stack 9 servicios
 docker compose -f docker-compose.local.yml up -d --build
@@ -34,14 +34,20 @@ open http://localhost:5173
 
 | Var | Default | Nota |
 |---|---|---|
-| `DATABASE_URL` | `postgresql+psycopg2://cu002:cu002-secret@postgres:5432/cu002` | PGBouncer `transaction` pool 25 |
+| `DATABASE_URL` | Sin default seguro | PGBouncer `transaction` pool 25 |
 | `STORAGE_BACKEND` | `minio` (`filesystem` fallback si no hay S3_ENDPOINT) | `s3://cu002-videos/videos/<id>.mp4` |
 | `AI_PROVIDER` | `hybrid` (`local` primero, fallback `api`) | `disabled` desactiva IA |
 | `AI_LOCAL_BASE_URL` | `http://vllm-vision:8000/v1` | Qwen2.5-VL-32B-AWQ TP4 |
+| `AI_API_PROVIDER` | `openrouter` | Proveedor comercial OpenAI-compatible opcional |
+| `AI_API_BASE_URL` | `https://openrouter.ai/api/v1` | Solo se usa si `AI_API_KEY` está configurado |
+| `AI_API_TEXT_MODEL` | `qwen/qwen-2.5-72b-instruct` | Fallback comercial para chat/texto |
+| `AI_API_VISION_MODEL` | `qwen/qwen-2.5-vl-72b-instruct` | Fallback comercial para visión |
 | `VLLM_TENSOR_PARALLEL_SIZE` | `4` | 8 GPUs: vision 0-3, text 4-7 |
 | `WHISPER_BASE_URL` | `http://whisper:8001/v1` | large-v3-turbo |
 
 ## Servicios y Puertos
+
+OpenRouter funciona sin cambios de código porque expone API compatible con OpenAI. En modo `hybrid`, el backend intenta vLLM local primero y usa la API comercial solo como fallback si `AI_API_BASE_URL` y `AI_API_KEY` están definidos.
 
 | Servicio | Puerto | Health | Notas |
 |---|---|---|---|
@@ -59,7 +65,7 @@ Escalar workers: `docker compose -f docker-compose.local.yml up -d --scale worke
 ## Modelos Offline
 
 ```bash
-# scripts/pull_models.sh descarga a volumen models (requiere internet)
+# backend/scripts/pull_models.sh descarga a volumen models (requiere internet)
 huggingface-cli download Qwen/Qwen2.5-VL-32B-Instruct-AWQ --local-dir /models/Qwen2.5-VL-32B-Instruct-AWQ
 huggingface-cli download Qwen/Qwen2.5-32B-Instruct-AWQ --local-dir /models/Qwen2.5-32B-Instruct-AWQ
 # bge-m3 y whisper se cachean en hf_cache/whisper_models
@@ -85,3 +91,14 @@ docker compose -f docker-compose.local.yml logs -f backend worker vllm-vision
 - Rotar `SECRET_KEY` (>=64 chars), `MINIO_ROOT_PASSWORD`, `POSTGRES_PASSWORD` en `.env` real.
 - `AZURE_*` deshabilitado local; `SECRET_KEY` requerido en prod.
 - `gitleaks` + `trivy` en CI `security-audit.yml` weekly.
+
+## Deployment Checklist
+
+- Usar un commit/tag específico, no referencias ambiguas como "latest".
+- Crear `.env` desde `.env.example` y cargar secretos desde el mecanismo protegido del entorno.
+- Ejecutar `docker compose -f docker-compose.local.yml config` antes de construir.
+- Construir backend, worker y frontend desde cero.
+- Ejecutar migraciones con `docker compose -f docker-compose.local.yml exec backend alembic upgrade head` antes de abrir tráfico.
+- Validar `/livez`, `/startupz`, `/readyz` y `/health`.
+- Revisar logs por stdout/stderr y habilitar archivos solo con `SECURITY_LOG_TO_FILE=true` y volumen explícito.
+- Ejecutar `pytest`, `flake8`, `npm test`, `npm run lint`, `npm run build`, `gitleaks` y `trivy` sin fallos críticos/altos.

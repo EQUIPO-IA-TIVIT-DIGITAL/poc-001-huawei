@@ -40,7 +40,7 @@ class AudioAnalyzer:
         self._storage = None
         self._speech = None
         self._repo = None
-        self._gcs_client = None  # OPT-02: cliente GCS centralizado
+        self._storage_client = None  # OPT-02: cliente de almacenamiento centralizado
         self._redis = None         # OPT-09: cliente Redis para caché de queries
         self._tmp_dir = None       # Directorio temporal configurable (AUDIO_TMP_DIR)
         self._initialized = False
@@ -50,19 +50,22 @@ class AudioAnalyzer:
         if self._initialized:
             return
 
-        from infrastructure.adapters.gemini_adapter import GeminiAdapter
-        from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-        from infrastructure.adapters.gcp_speech import GCPSpeechAdapter
+        from infrastructure.adapters.ai_gateway import get_ai_gateway
+        from infrastructure.adapters.whisper_adapter import WhisperAdapter
+        from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+        from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
         from infrastructure.repositories.audio_analysis_repository import AudioAnalysisRepository
-        from config.gcp_config import GCPConfig
-        from google.cloud import storage as gcs_storage
+        from config.app_config import AppConfig
 
-        gcp_config = GCPConfig()
-        self._gemini = GeminiAdapter()
-        self._storage = CloudStorageAdapter(gcp_config)
-        self._speech = GCPSpeechAdapter(gcp_config)
+        storage_backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+        if storage_backend == "minio":
+            self._storage = MinioStorageAdapter(AppConfig)
+        else:
+            self._storage = FilesystemStorageAdapter()
+        self._gemini = get_ai_gateway()
+        self._speech = WhisperAdapter()
         self._repo = AudioAnalysisRepository()
-        self._gcs_client = gcs_storage.Client()  # OPT-02: instancia única compartida
+        self._storage_client = self._storage  # OPT-02: instancia única compartida
 
         # Redis para caché de queries (opcional — degradado gracioso si no disponible)
         try:
@@ -130,7 +133,7 @@ class AudioAnalyzer:
                 EstadoAudioAnalysis.INDEXING,
             }
             _can_skip_extraction = bool(
-                analysis.audio_gcs_url and analysis.estado in _checkpoint_states
+                analysis.audio_url and analysis.estado in _checkpoint_states
             )
             _can_skip_transcription = bool(
                 (analysis.total_segments or 0) > 0 and
@@ -140,10 +143,10 @@ class AudioAnalyzer:
             duration = analysis.video_duration
 
             if _can_skip_extraction:
-                logger.info(f"[{analysis_id[:8]}] ⏭️  Checkpoint AUDIO_READY: descargando audio de GCS...")
-                audio_path = self._download_audio_from_gcs(analysis.audio_gcs_url)
+                logger.info(f"[{analysis_id[:8]}] ⏭️  Checkpoint AUDIO_READY: descargando audio...")
+                audio_path = self._download_audio_from_storage(analysis.audio_url)
                 if not audio_path:
-                    logger.warning(f"[{analysis_id[:8]}] Audio GCS no disponible, re-extrayendo desde video...")
+                    logger.warning(f"[{analysis_id[:8]}] Audio no disponible, re-extrayendo desde video...")
                     _can_skip_extraction = False
                     _can_skip_transcription = False
 
@@ -151,9 +154,9 @@ class AudioAnalyzer:
                 # ══ FASE 1: DESCARGA DEL VIDEO ══════════════════════════════════
                 self._update_progress(analysis_id, EstadoAudioAnalysis.EXTRACTING_AUDIO, "Descargando video...", 5.0)
 
-                video_path = self._download_video(analysis.video_gcs_url)
+                video_path = self._download_video(analysis.video_url)
                 if not video_path:
-                    raise Exception("No se pudo descargar el video desde GCS")
+                    raise Exception("No se pudo descargar el video desde el almacenamiento")
 
                 duration = self._get_video_duration(video_path)
                 if duration > MAX_VIDEO_DURATION_SECONDS:
@@ -192,9 +195,9 @@ class AudioAnalyzer:
                         except Exception as seg_err:
                             logger.warning(f"[{analysis_id[:8]}] ⚠️ No se pudieron copiar segmentos: {seg_err}")
                         analysis.video_size_mb = round(os.path.getsize(video_path) / (1024 * 1024), 2) if video_path and os.path.exists(video_path) else 0.0
-                        analysis.audio_gcs_url = _cached_audio.get("audio_gcs_url", "")
+                        analysis.audio_url = _cached_audio.get("audio_url", "")
                         analysis.full_transcription = _cached_audio.get("full_transcription", "")
-                        analysis.full_transcription_gcs_url = _cached_audio.get("full_transcription_gcs_url", "")
+                        analysis.full_transcription_url = _cached_audio.get("full_transcription_url", "")
                         analysis.total_segments = _cached_audio.get("total_segments", 0)
                         analysis.detected_language = _cached_audio.get("detected_language", "")
                         analysis.detected_languages = _cached_audio.get("detected_languages", [])
@@ -230,9 +233,9 @@ class AudioAnalyzer:
                 if not audio_path:
                     raise Exception("No se pudo extraer audio del video. El video puede no tener pista de audio.")
 
-                audio_gcs_url = self._upload_audio_to_gcs(audio_path, analysis_id)
-                if audio_gcs_url:
-                    analysis.audio_gcs_url = audio_gcs_url
+                audio_url = self._upload_audio_to_storage(audio_path, analysis_id)
+                if audio_url:
+                    analysis.audio_url = audio_url
 
                 # ── Checkpoint AUDIO_READY ───────────────────────────────────────
                 analysis.actualizar_estado(EstadoAudioAnalysis.AUDIO_READY, "Audio preparado", 20.0)
@@ -253,7 +256,7 @@ class AudioAnalyzer:
                 segments = self._transcribe_audio_segmented(
                     audio_path, analysis_id, duration or 0,
                     video_path=video_path,
-                    existing_gcs_uri=analysis.audio_gcs_url,
+                    existing_storage_uri=analysis.audio_url,
                     context_title=analysis.titulo,
                     context_description=analysis.descripcion,
                     language=analysis.detected_language or "es",
@@ -294,11 +297,11 @@ class AudioAnalyzer:
                         k for k, _ in sorted(lang_counts.items(), key=lambda x: -x[1])
                     ]
 
-                # Guardar transcripción en GCS si supera ~100KB para evitar límite 1 MB Firestore
+                # Guardar transcripción en almacenamiento si supera ~100KB para evitar límite 1 MB.
                 if len(full_text) > 100_000:
-                    gcs_url = self._upload_transcription_to_gcs(full_text, analysis_id)
-                    if gcs_url:
-                        analysis.full_transcription_gcs_url = gcs_url
+                    storage_url = self._upload_transcription_to_storage(full_text, analysis_id)
+                    if storage_url:
+                        analysis.full_transcription_url = storage_url
                         analysis.full_transcription = full_text[:600] + "…"  # solo preview
                     else:
                         analysis.full_transcription = full_text[:900_000]
@@ -354,9 +357,9 @@ class AudioAnalyzer:
                 try:
                     _vcache_audio.store_analysis(_cache_key_audio, {
                         "original_analysis_id": analysis_id,
-                        "audio_gcs_url": analysis.audio_gcs_url or "",
+                        "audio_url": analysis.audio_url or "",
                         "full_transcription": analysis.full_transcription or "",
-                        "full_transcription_gcs_url": analysis.full_transcription_gcs_url or "",
+                        "full_transcription_url": analysis.full_transcription_url or "",
                         "total_segments": analysis.total_segments,
                         "detected_language": analysis.detected_language or "",
                         "detected_languages": analysis.detected_languages or [],
@@ -388,31 +391,29 @@ class AudioAnalyzer:
                     except Exception:
                         pass
 
-    def _download_video(self, gcs_url: str) -> Optional[str]:
-        """Descarga video desde GCS a archivo temporal (OPT-02, SEC-04)"""
+    def _download_video(self, storage_url: str) -> Optional[str]:
+        """Descarga video desde storage a archivo temporal (OPT-02, SEC-04)"""
         try:
-            expected_bucket = os.getenv('GCP_BUCKET_NAME', '')
+            expected_bucket = os.getenv('S3_BUCKET', '')
 
-            # Parsear gs://bucket/path
-            if gcs_url.startswith("gs://"):
-                parts = gcs_url[5:].split("/", 1)
+            # Parse S3 or filesystem storage URIs.
+            if storage_url.startswith(("s3://", "file://")):
+                parts = storage_url.split("://", 1)[1].split("/", 1)
                 bucket_name = parts[0]
                 blob_path = parts[1] if len(parts) > 1 else ""
             else:
                 bucket_name = expected_bucket
-                blob_path = gcs_url
+                blob_path = storage_url
 
             # SEC-04: Validar bucket y path para evitar SSRF / path traversal
-            if expected_bucket and bucket_name != expected_bucket:
+            if expected_bucket and bucket_name and bucket_name != expected_bucket:
                 raise ValueError(f"Bucket inesperado: {bucket_name!r}")
             if '..' in blob_path or blob_path.startswith('/'):
-                raise ValueError(f"Ruta GCS inválida: {blob_path!r}")
-
-            bucket = self._gcs_client.bucket(bucket_name)
-            blob = bucket.blob(blob_path)
+                raise ValueError(f"Ruta inválida: {blob_path!r}")
 
             temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=self._tmp_dir)
-            blob.download_to_filename(temp_file.name)
+            if not self._storage.descargar_archivo(blob_path, temp_file.name):
+                raise Exception(f"No se pudo descargar {blob_path}")
 
             logger.info(f"✅ Video descargado: {os.path.getsize(temp_file.name)} bytes")
             return temp_file.name
@@ -483,280 +484,25 @@ class AudioAnalyzer:
             logger.error(f"❌ Error extrayendo audio: {e}")
             return None
 
-    def _upload_audio_to_gcs(self, audio_path: str, analysis_id: str) -> Optional[str]:
-        """Sube el audio extraído a GCS para respaldo (OPT-02: usa self._gcs_client)"""
+    def _upload_audio_to_storage(self, audio_path: str, analysis_id: str) -> Optional[str]:
+        """Sube el audio extraído al almacenamiento para respaldo."""
         try:
-            bucket_name = os.getenv('GCP_BUCKET_NAME')
+            bucket_name = os.getenv('S3_BUCKET')
             if not bucket_name:
                 return None
 
-            bucket = self._gcs_client.bucket(bucket_name)
             blob_path = f"audio_analysis/{analysis_id}/audio.flac"
-            blob = bucket.blob(blob_path)
-            blob.upload_from_filename(audio_path)
+            url = self._storage.upload_file(audio_path, blob_path, return_signed_url=True)
+            if not url:
+                return None
 
-            gcs_url = f"gs://{bucket_name}/{blob_path}"
-            logger.info(f"✅ Audio subido a GCS: {gcs_url}")
-            return gcs_url
+            storage_url = f"s3://{bucket_name}/{blob_path}" if bucket_name else url
+            logger.info(f"✅ Audio subido a storage: {storage_url}")
+            return storage_url
 
         except Exception as e:
-            logger.warning(f"⚠️ No se pudo subir audio a GCS: {e}")
+            logger.warning(f"⚠️ No se pudo subir audio a storage: {e}")
             return None
-
-    def _transcribe_with_gemini(
-        self,
-        audio_path: str,
-        analysis_id: str,
-        total_duration: float,
-        video_path: Optional[str] = None,
-        context_title: str = "",
-        context_description: str = "",
-        language: str = "es",
-    ) -> List[Dict[str, Any]]:
-        """
-        Transcripción verbatim + identificación de hablantes en una sola llamada.
-        - Si hay video disponible: envía video (contiene audio) a Gemini Vision
-          para transcripción con contexto visual (labios, expresiones, nombres en pantalla).
-        - Si no hay video: envía solo el audio FLAC.
-        Fallback a STT si Gemini falla.
-        """
-        import json as _json
-        import mimetypes
-        from google import genai
-        from google.genai import types as genai_types
-
-        api_key = os.getenv('GEMINI_API_KEY')
-        if not api_key:
-            raise Exception("GEMINI_API_KEY no configurada")
-
-        client = genai.Client(api_key=api_key)
-
-        use_video = bool(video_path and os.path.exists(video_path))
-
-        def _upload_and_wait(src_path: str, mime: str, label: str):
-            """Sube un archivo a Gemini Files API y espera a que esté ACTIVE."""
-            file_mb = os.path.getsize(src_path) / (1024 * 1024)
-            logger.info(f"[{analysis_id[:8]}] Gemini: subiendo {label} {file_mb:.1f} MB...")
-            with open(src_path, 'rb') as _f:
-                _mf = client.files.upload(
-                    file=_f,
-                    config=genai_types.UploadFileConfig(mime_type=mime),
-                )
-            _wait, _elapsed = 2.0, 0.0
-            while _mf.state.name == "PROCESSING" and _elapsed < 600.0:
-                time.sleep(_wait)
-                _elapsed += _wait
-                _wait = min(_wait * 2, 30.0)
-                _mf = client.files.get(name=_mf.name)
-            if _mf.state.name != "ACTIVE":
-                raise Exception(f"Gemini Files API: {label} no activo ({_mf.state.name})")
-            return _mf
-
-        # Intentar con video primero; si falla con INVALID_ARGUMENT (codec/formato
-        # no soportado), reintentar con audio FLAC solamente.
-        media_file = None
-        mime_type = "audio/flac"
-        src_label = "audio"
-        if use_video:
-            try:
-                v_mime = mimetypes.guess_type(video_path)[0] or 'video/mp4'
-                media_file = _upload_and_wait(video_path, v_mime, "video")
-                mime_type = v_mime
-                src_label = "video"
-            except Exception as _ve:
-                is_invalid_arg = "INVALID_ARGUMENT" in str(_ve) or "invalid argument" in str(_ve).lower()
-                if is_invalid_arg:
-                    logger.warning(
-                        f"[{analysis_id[:8]}] Gemini: video rechazado ({_ve}), "
-                        "reintentando con audio FLAC..."
-                    )
-                    # Limpiar el archivo parcial si quedó
-                    if media_file:
-                        try:
-                            client.files.delete(name=media_file.name)
-                        except Exception:
-                            pass
-                        media_file = None
-                else:
-                    raise
-
-        if media_file is None:
-            media_file = _upload_and_wait(audio_path, "audio/flac", "audio")
-            file_mb = os.path.getsize(audio_path) / (1024 * 1024)
-            src_label = "audio"
-
-        use_video = (src_label == "video")  # Actualizar flag si cayó al fallback de audio
-
-        logger.info(f"[{analysis_id[:8]}] Gemini Vision: {src_label} listo ({file_mb:.1f} MB), transcribiendo...")
-
-        vision_extra = (
-            "Tienes acceso tanto al AUDIO como al VIDEO. "
-            "Usa el movimiento de labios, el contexto visual y cualquier nombre visible en pantalla "
-            "para mejorar la precisión de la transcripción y corregir palabras dudosas.\n"
-        ) if use_video else ""
-
-        context_lines = []
-        if context_title and context_title.strip():
-            context_lines.append(f"- Titulo del contenido: {context_title.strip()[:180]}")
-        if context_description and context_description.strip():
-            context_lines.append(f"- Descripcion: {context_description.strip()[:400]}")
-        context_block = "\n".join(context_lines)
-        if context_block:
-            context_block = (
-                "\nCONTEXTO (usar solo para desambiguar nombres propios y terminos):\n"
-                f"{context_block}\n"
-            )
-
-        prompt = (
-            f"{vision_extra}"
-            "Tu tarea es producir una transcripción VERBATIM completa y precisa.\n\n"
-            "REGLAS OBLIGATORIAS:\n"
-            "1. Transcribe CADA palabra pronunciada, sin omitir nada: muletillas "
-            "('eh', 'este', 'o sea', 'pues', 'bueno', 'mmm'), repeticiones, titubeos y correcciones "
-            "del propio hablante.\n"
-            "2. NO resumas, NO parafrasees, NO 'limpies' el discurso. Copia exactamente lo que se dice.\n"
-            "3. SEGMENTACIÓN por turno de hablante: crea un nuevo segmento SOLO cuando cambia "
-            "el hablante. No fragmentes un turno continuo en varios segmentos cortos.\n"
-            "4. Identifica a cada hablante:\n"
-            "   - Si reconoces a la persona (figura pública, nombre visible en pantalla): usa su nombre real.\n"
-            "   - Si no puedes identificarla: usa SPEAKER_1, SPEAKER_2, etc. de forma consistente.\n"
-            "5. Timestamps precisos al segundo para cada segmento.\n"
-            "6. Incluye TODOS los turnos aunque sean brevísimos ('Sí.', 'Claro.', 'Mmm.').\n\n"
-            "7. Nombres propios (personas, marcas, lugares): prioriza exactitud. Si tienes duda, NO inventes.\n"
-            "   - Conserva la forma fonetica escuchada y agrega ' [dudoso]'.\n"
-            "   - Si es ininteligible, usa '[inaudible]'.\n"
-            "8. NO repitas un mismo fragmento en segmentos consecutivos salvo que realmente se repita en el audio.\n"
-            f"{context_block}\n"
-            "Responde SOLO con JSON válido, sin texto adicional ni bloques de código:\n"
-            '{"segments":[{"start_time":0.0,"end_time":5.2,"text":"texto exacto","speaker":"Nombre o SPEAKER_1"}]}'
-        )
-
-        configured = os.getenv("GEMINI_TRANSCRIBE_MODELS", "").strip()
-        if configured:
-            model_candidates = [m.strip() for m in configured.split(",") if m.strip()]
-        else:
-            preferred = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-2.5-pro").strip() or "gemini-2.5-pro"
-            model_candidates = [preferred]
-            if preferred != "gemini-2.5-flash":
-                model_candidates.append("gemini-2.5-flash")
-
-        response = None
-        last_model_error = None
-        for model_name in model_candidates:
-            try:
-                logger.info(f"[{analysis_id[:8]}] Gemini Vision: usando modelo {model_name}")
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[
-                        genai_types.Part.from_uri(file_uri=media_file.uri, mime_type=mime_type),
-                        prompt,
-                    ],
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0,
-                        top_p=0.1,
-                        response_mime_type="application/json",
-                    ),
-                )
-                if not getattr(response, "text", ""):
-                    raise Exception("Respuesta vacia de Gemini")
-                break
-            except Exception as model_err:
-                last_model_error = model_err
-                logger.warning(
-                    f"[{analysis_id[:8]}] Gemini Vision: fallo con {model_name}: {model_err}"
-                )
-
-        if response is None:
-            raise Exception(f"Gemini no devolvio respuesta valida: {last_model_error}")
-
-        try:
-            client.files.delete(name=media_file.name)
-        except Exception:
-            pass
-
-        raw = response.text.strip()
-        raw = re.sub(r'^```(?:json)?\s*\n?', '', raw)
-        raw = re.sub(r'\n?\s*```$', '', raw)
-
-        data = _json.loads(raw)
-        if isinstance(data, dict):
-            raw_segments = data.get("segments", [])
-        elif isinstance(data, list):
-            raw_segments = data
-        else:
-            raw_segments = []
-
-        segments = []
-        speaker_idx_map: Dict[str, str] = {}
-        speaker_counter = 1
-
-        def _normalize_speaker_label(label: str) -> str:
-            nonlocal speaker_counter
-            value = re.sub(r"\s+", " ", (label or "").strip())
-            if not value:
-                return ""
-
-            m = re.match(r"(?i)^speaker[\s_-]*(\d+)$", value)
-            if m:
-                return f"SPEAKER_{int(m.group(1))}"
-
-            if re.match(r"(?i)^speaker\b", value):
-                key = value.lower()
-                if key not in speaker_idx_map:
-                    speaker_idx_map[key] = f"SPEAKER_{speaker_counter}"
-                    speaker_counter += 1
-                return speaker_idx_map[key]
-
-            return value
-
-        for seg in raw_segments:
-            if not isinstance(seg, dict):
-                continue
-            text = str(seg.get("text", "")).strip()
-            if not text:
-                continue
-
-            start_time = float(seg.get("start_time", 0.0))
-            end_time = float(seg.get("end_time", start_time))
-            if end_time < start_time:
-                end_time = start_time
-
-            speaker = _normalize_speaker_label(str(seg.get("speaker", "")))
-
-            # Gemini no expone un valor de confianza real; se usan estimaciones
-            # conservadoras documentadas (video aporta contexto visual adicional)
-            _GEMINI_CONFIDENCE_VIDEO = 0.90
-            _GEMINI_CONFIDENCE_AUDIO = 0.85
-            segments.append({
-                "text": text,
-                "start_time": start_time,
-                "end_time": end_time,
-                "confidence": _GEMINI_CONFIDENCE_VIDEO if use_video else _GEMINI_CONFIDENCE_AUDIO,
-                "speaker": speaker,
-                "language": language,
-                "words": [],
-            })
-
-        # Reduce cortes artificiales: unir turnos consecutivos del mismo hablante con gap minimo.
-        merged_segments: List[Dict[str, Any]] = []
-        for seg in sorted(segments, key=lambda s: (s["start_time"], s["end_time"])):
-            if not merged_segments:
-                merged_segments.append(seg)
-                continue
-
-            prev = merged_segments[-1]
-            gap = max(0.0, seg["start_time"] - prev["end_time"])
-            same_speaker = bool(prev.get("speaker") and seg.get("speaker") and prev["speaker"] == seg["speaker"])
-            should_merge = same_speaker and gap <= 0.35
-
-            if should_merge:
-                prev["text"] = f"{prev['text'].rstrip()} {seg['text'].lstrip()}".strip()
-                prev["end_time"] = max(prev["end_time"], seg["end_time"])
-            else:
-                merged_segments.append(seg)
-
-        logger.info(f"[{analysis_id[:8]}] Gemini Vision: {len(merged_segments)} segmentos ({src_label})")
-        return merged_segments
 
     def _transcribe_audio_segmented(
         self,
@@ -764,511 +510,61 @@ class AudioAnalyzer:
         analysis_id: str,
         total_duration: float,
         video_path: Optional[str] = None,
-        existing_gcs_uri: Optional[str] = None,
+        existing_storage_uri: Optional[str] = None,
         context_title: str = "",
         context_description: str = "",
         language: str = "es",
     ) -> List[Dict[str, Any]]:
         """
-        Transcribe audio completo con identificación de hablantes.
+        Transcribe audio completo con identificación de hablantes via Whisper local.
 
-        Pipeline híbrido (prioridad tras mejora #6):
-          1. PRIMARIO:   Gemini Vision — transcripción + diarización en una sola llamada
-          2. FALLBACK 1: Google STT V2 + chirp_2 + Gemini enrichment de hablantes
-          3. FALLBACK 2: Google STT V1 con chunking paralelo para audios largos (> 15 min)
+        Usa WhisperAdapter.transcribe() como ruta STT única (100% local).
+        Retorna segmentos con {start_time, end_time, text, speaker, confidence, language, words}.
         """
         from domain.entities import EstadoAudioAnalysis
 
-        # ── PRIMARIO: Gemini Vision ────────────────────────────────────────────
+        self._update_progress(
+            analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
+            "Transcribiendo con Whisper local...", 30.0,
+        )
+
         try:
-            self._update_progress(
-                analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
-                "Transcribiendo con Gemini Vision (alta precisión)...", 30.0,
-            )
-            segments = self._transcribe_with_gemini(
-                audio_path, analysis_id, total_duration,
-                video_path=video_path,
-                context_title=context_title,
-                context_description=context_description,
-                language=language,
-            )
-            if segments:
-                return segments
-            logger.warning(f"[{analysis_id[:8]}] Gemini devolvió 0 segmentos, intentando STT V2...")
-        except Exception as _gemini_err:
-            logger.warning(f"[{analysis_id[:8]}] ⚠️ Gemini falló: {_gemini_err}. Fallback a STT V2...")
-
-        # ── FALLBACK 1: STT V2 + diarización + enriquecimiento Gemini ─────────
-        try:
-            self._update_progress(
-                analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
-                "Transcribiendo con STT V2 + diarización...", 35.0,
-            )
-            segments = self._transcribe_with_stt_v2_diarization(
-                audio_path, analysis_id, total_duration,
-                existing_gcs_uri=existing_gcs_uri,
-                language=language,
-            )
-
-            if segments:
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V2: {len(segments)} segmentos. Enriqueciendo con Gemini..."
-                )
-                self._update_progress(
-                    analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
-                    "Identificando hablantes con IA...", 55.0,
-                )
-                segments = self._enrich_speakers_with_gemini(
-                    segments, analysis_id,
-                    video_path=video_path,
-                    context_title=context_title,
-                    context_description=context_description,
-                )
-                return segments
-
-            logger.warning(f"[{analysis_id[:8]}] STT V2 devolvió 0 segmentos, intentando STT V1...")
-        except Exception as _stt_v2_err:
-            logger.warning(f"[{analysis_id[:8]}] ⚠️ STT V2 falló: {_stt_v2_err}. Fallback a STT V1...")
-
-        # ── FALLBACK 2: STT V1 con chunking paralelo para audios largos ────────
-        try:
-            self._update_progress(
-                analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
-                "Transcribiendo con STT V1...", 40.0,
-            )
-
-            # Audios > 15 min: mayor eficiencia con transcripción paralela (mejora #8)
-            if total_duration > 900:
-                logger.info(f"[{analysis_id[:8]}] Audio > 15 min, usando transcripción paralela por chunks...")
-                parallel_segs = self._transcribe_audio_parallel(
-                    audio_path, analysis_id, total_duration, language=language,
-                )
-                if parallel_segs:
-                    logger.info(f"[{analysis_id[:8]}] STT V1 paralelo: {len(parallel_segs)} segmentos")
-                    return parallel_segs
-
-            from google.cloud import speech_v1
-
-            speech_client = speech_v1.SpeechClient()
-            bucket_name = os.getenv('GCP_BUCKET_NAME')
-            if not bucket_name:
-                logger.error("GCP_BUCKET_NAME no configurado")
-                return []
-
-            _temp_blob = None
-            if existing_gcs_uri:
-                gcs_uri = existing_gcs_uri
-                logger.info(f"[{analysis_id[:8]}] Reutilizando audio GCS para STT V1: {gcs_uri}")
-            else:
-                bucket = self._gcs_client.bucket(bucket_name)
-                blob_path = f"audio_analysis/{analysis_id}/transcription_audio.flac"
-                _temp_blob = bucket.blob(blob_path)
-                _temp_blob.upload_from_filename(audio_path)
-                gcs_uri = f"gs://{bucket_name}/{blob_path}"
-
-            bcp47 = self._lang_to_bcp47(language)
-            audio = speech_v1.RecognitionAudio(uri=gcs_uri)
-            config = speech_v1.RecognitionConfig(
-                encoding=speech_v1.RecognitionConfig.AudioEncoding.FLAC,
-                sample_rate_hertz=16000,
-                language_code=bcp47,
-                enable_automatic_punctuation=True,
-                enable_word_time_offsets=True,
-                enable_word_confidence=True,
-                profanity_filter=False,
-                model="latest_long",
-                use_enhanced=True,
-                max_alternatives=1,
-                diarization_config=speech_v1.SpeakerDiarizationConfig(
-                    enable_speaker_diarization=True,
-                    min_speaker_count=2,
-                    max_speaker_count=6,
-                ),
-            )
-
-            timeout_seconds = max(600, int(total_duration * 0.17))
-            logger.info(f"[{analysis_id[:8]}] STT V1 (timeout: {timeout_seconds}s, lang: {bcp47})...")
-            operation = speech_client.long_running_recognize(config=config, audio=audio)
-            response = operation.result(timeout=timeout_seconds)
-
-            segments = []
-            all_words: List[Dict[str, Any]] = []
-            # STT V1 con diarización: los speaker_tag solo están poblados en el
-            # Último resultado ("final diarized result"). Los resultados intermedios
-            # tienen words sin tag. Por eso recopilamos palabras de TODOS los
-            # resultados pero ignoramos los speaker_tag hasta que veamos la versión
-            # diarizada completa.
-            diarized_words: List[Dict[str, Any]] = []  # solo del último resultado
-            plain_segments: List[Dict[str, Any]] = []  # fallback si no hay diarización
-
-            all_results = list(response.results)
-            for idx_r, result in enumerate(all_results):
-                if not result.alternatives:
-                    continue
-                alternative = result.alternatives[0]
-                text = alternative.transcript.strip()
-                if not text:
-                    continue
-                conf = round(alternative.confidence, 3) if hasattr(alternative, 'confidence') else 0.0
-                lang_code = (
-                    result.language_code
-                    if hasattr(result, 'language_code') and result.language_code
-                    else language
-                )
-                if alternative.words:
-                    for word in alternative.words:
-                        speaker_tag = getattr(word, 'speaker_tag', 0)
-                        entry = {
-                            'word': word.word,
-                            'start_time': word.start_time.total_seconds(),
-                            'end_time': word.end_time.total_seconds(),
-                            'confidence': round(word.confidence, 3) if hasattr(word, 'confidence') else conf,
-                            'speaker_tag': speaker_tag,
-                        }
-                        all_words.append(entry)
-                        # El último resultado es el que contiene los tags reales
-                        if idx_r == len(all_results) - 1:
-                            diarized_words.append(entry)
-                else:
-                    plain_segments.extend(self._split_into_sentences(text, [], conf, lang_code))
-
-            # Decidir qué usar
-            diar_has_tags = any(w.get('speaker_tag', 0) != 0 for w in diarized_words)
-            any_has_tags = any(w.get('speaker_tag', 0) != 0 for w in all_words)
-
-            if diar_has_tags:
-                # Caso normal: usar solo el último resultado con speaker_tags
-                segments = self._group_words_into_speaker_segments(diarized_words, language)
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V1 diarización (ultimo resultado): "
-                    f"{len(segments)} segmentos, {len(diarized_words)} palabras"
-                )
-            elif any_has_tags:
-                # Tags parsiales en resultados intermedios
-                segments = self._group_words_into_speaker_segments(all_words, language)
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V1 diarización (todos los resultados): "
-                    f"{len(segments)} segmentos, {len(all_words)} palabras"
-                )
-            elif all_words:
-                # Sin diarización: usar todas las palabras para segmentación por oración
-                conf_avg = round(sum(w.get('confidence', 0) for w in all_words) / len(all_words), 3)
-                segments = self._split_into_sentences(
-                    " ".join(w['word'] for w in all_words), all_words, conf_avg, language
-                )
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V1 sin diarización: {len(segments)} segmentos"
-                )
-            else:
-                segments = plain_segments
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V1 fallback frases: {len(segments)} segmentos"
-                )
-
-            if _temp_blob:
-                try:
-                    _temp_blob.delete()
-                except Exception:
-                    pass
-
-            logger.info(f"[{analysis_id[:8]}] STT V1 transcripción completa: {len(segments)} segmentos")
-
-            # Enriquecer identificación de hablantes con Gemini (igual que STT V2)
-            if segments:
-                self._update_progress(
-                    analysis_id, EstadoAudioAnalysis.TRANSCRIBING,
-                    "Identificando hablantes con IA...", 60.0,
-                )
-                segments = self._enrich_speakers_with_gemini(
-                    segments, analysis_id,
-                    video_path=video_path,
-                    context_title=context_title,
-                    context_description=context_description,
-                )
-
-            return segments
-
+            result = self._speech.transcribe(audio_path, language=language)
         except Exception as e:
-            logger.error(f"[{analysis_id[:8]}] ❌ Error en transcripción STT V1: {e}", exc_info=True)
+            logger.error(f"[{analysis_id[:8]}] ❌ Error en transcripción local: {e}", exc_info=True)
             return []
+
+        if not result or not result.get("success"):
+            msg = (result or {}).get("error", "desconocido")
+            logger.error(f"[{analysis_id[:8]}] ❌ Whisper no pudo transcribir: {msg}")
+            return []
+
+        raw_segments = result.get("segments", []) or []
+        segments: List[Dict[str, Any]] = []
+        for seg in raw_segments:
+            start = float(seg.get("start", 0.0) or 0.0)
+            end = float(seg.get("end", start) or start)
+            if end < start:
+                end = start
+            text = str(seg.get("text", "")).strip()
+            if not text:
+                continue
+            speaker = str(seg.get("speaker", "SPEAKER_1") or "SPEAKER_1")
+            segments.append({
+                "text": text,
+                "start_time": round(start, 3),
+                "end_time": round(end, 3),
+                "confidence": 0.85,
+                "speaker": speaker,
+                "language": language,
+                "words": [],
+            })
+
+        logger.info(f"[{analysis_id[:8]}] Whisper transcripción completa: {len(segments)} segmentos")
+        return segments
 
     # ═══════════════════════════════════════════════════════════════════════════
     # STT V2 + SPEAKER DIARIZATION (modelo chirp_2)
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    def _transcribe_with_stt_v2_diarization(
-        self,
-        audio_path: str,
-        analysis_id: str,
-        total_duration: float,
-        existing_gcs_uri: Optional[str] = None,
-        language: str = "es",
-    ) -> List[Dict[str, Any]]:
-        """
-        Transcripción con Google Speech-to-Text V2 usando:
-        - Modelo chirp_2 (máxima precisión en español)
-        - Speaker diarization (identificación real de hablantes por voz)
-        - Word-level timestamps
-
-        Requiere audio en GCS. Usa batch_recognize para archivos largos.
-        """
-        from google.cloud.speech_v2 import SpeechClient
-        from google.cloud.speech_v2.types import cloud_speech
-
-        project_id = os.getenv('GCP_PROJECT_ID')
-        bucket_name = os.getenv('GCP_BUCKET_NAME')
-        location = os.getenv('GCP_REGION', 'us-central1')
-        if not project_id or not bucket_name:
-            raise Exception("GCP_PROJECT_ID o GCP_BUCKET_NAME no configurados")
-
-        # Asegurar que el audio esté en GCS
-        _temp_blob = None
-        if existing_gcs_uri and existing_gcs_uri.startswith('gs://'):
-            gcs_uri = existing_gcs_uri
-            logger.info(f"[{analysis_id[:8]}] STT V2: reutilizando audio GCS: {gcs_uri}")
-        else:
-            bucket = self._gcs_client.bucket(bucket_name)
-            blob_path = f"audio_analysis/{analysis_id}/stt_v2_audio.flac"
-            _temp_blob = bucket.blob(blob_path)
-            _temp_blob.upload_from_filename(audio_path)
-            gcs_uri = f"gs://{bucket_name}/{blob_path}"
-            logger.info(f"[{analysis_id[:8]}] STT V2: audio subido a {gcs_uri}")
-
-        try:
-            from google.api_core.client_options import ClientOptions
-            client_options = ClientOptions(api_endpoint=f"{location}-speech.googleapis.com")
-            client = SpeechClient(client_options=client_options)
-
-            def _build_stt_v2_config(with_diarization: bool) -> cloud_speech.RecognitionConfig:
-                features_kwargs: dict = dict(
-                    enable_automatic_punctuation=True,
-                    enable_word_time_offsets=True,
-                    enable_word_confidence=True,
-                    profanity_filter=False,
-                )
-                if with_diarization:
-                    features_kwargs['diarization_config'] = cloud_speech.SpeakerDiarizationConfig(
-                        min_speaker_count=2,
-                        max_speaker_count=10,
-                    )
-                return cloud_speech.RecognitionConfig(
-                    auto_decoding_config=cloud_speech.AutoDetectDecodingConfig(),
-                    language_codes=[self._lang_to_bcp47(language)],
-                    model="chirp_2",
-                    features=cloud_speech.RecognitionFeatures(**features_kwargs),
-                )
-
-            output_config = cloud_speech.RecognitionOutputConfig(
-                inline_response_config=cloud_speech.InlineOutputConfig(),
-            )
-            timeout_seconds = max(900, int(total_duration * 0.25))
-
-            def _run_batch(cfg) -> object:
-                req = cloud_speech.BatchRecognizeRequest(
-                    recognizer=f"projects/{project_id}/locations/{location}/recognizers/_",
-                    config=cfg,
-                    files=[cloud_speech.BatchRecognizeFileMetadata(uri=gcs_uri)],
-                    recognition_output_config=output_config,
-                )
-                return client.batch_recognize(request=req).result(timeout=timeout_seconds)
-
-            # Intentar con diarización; si el modelo no la soporta, reintentar sin ella
-            response = None
-            diarization_available = False
-            try:
-                logger.info(
-                    f"[{analysis_id[:8]}] STT V2 chirp_2 + diarización, "
-                    f"timeout={timeout_seconds}s, audio={total_duration:.0f}s"
-                )
-                response = _run_batch(_build_stt_v2_config(with_diarization=True))
-                diarization_available = True
-            except Exception as _diar_err:
-                _diar_msg = str(_diar_err).lower()
-                if "speaker_diarization" in _diar_msg or "unsupported" in _diar_msg or "invalid" in _diar_msg:
-                    logger.warning(
-                        f"[{analysis_id[:8]}] chirp_2 no soporta diarización ({_diar_err}), "
-                        "reintentando sin diarización..."
-                    )
-                    response = _run_batch(_build_stt_v2_config(with_diarization=False))
-                    diarization_available = False
-                else:
-                    raise
-
-            logger.info(
-                f"[{analysis_id[:8]}] STT V2 respuesta recibida "
-                f"(diarización={'sí' if diarization_available else 'no'})"
-            )
-
-            # Procesar resultados
-            segments: List[Dict[str, Any]] = []
-
-            for file_uri, file_result in response.results.items():
-                transcript = file_result.transcript
-                if not transcript or not transcript.results:
-                    logger.warning(f"[{analysis_id[:8]}] STT V2: sin resultados para {file_uri}")
-                    continue
-
-                # Recopilar todas las palabras con speaker_tag para diarización
-                all_words: List[Dict[str, Any]] = []
-                for result in transcript.results:
-                    if not result.alternatives:
-                        continue
-                    alt = result.alternatives[0]
-                    confidence = alt.confidence if hasattr(alt, 'confidence') else 0.0
-
-                    for word_info in alt.words:
-                        speaker_tag = getattr(word_info, 'speaker_tag', 0)
-                        start_sec = (
-                            word_info.start_offset.total_seconds()
-                            if hasattr(word_info.start_offset, 'total_seconds')
-                            else word_info.start_offset.seconds + word_info.start_offset.nanos / 1e9
-                        )
-                        end_sec = (
-                            word_info.end_offset.total_seconds()
-                            if hasattr(word_info.end_offset, 'total_seconds')
-                            else word_info.end_offset.seconds + word_info.end_offset.nanos / 1e9
-                        )
-                        word_conf = (
-                            round(word_info.confidence, 3)
-                            if hasattr(word_info, 'confidence') and word_info.confidence
-                            else round(confidence, 3)
-                        )
-                        all_words.append({
-                            'word': word_info.word,
-                            'start_time': round(start_sec, 3),
-                            'end_time': round(end_sec, 3),
-                            'confidence': word_conf,
-                            'speaker_tag': speaker_tag,
-                        })
-
-                # Agrupar palabras por speaker_tag en segmentos contiguos
-                if all_words:
-                    has_diar = diarization_available and any(
-                        w.get('speaker_tag', 0) != 0 for w in all_words
-                    )
-                    if has_diar:
-                        segments = self._group_words_into_speaker_segments(all_words, language)
-                        logger.info(
-                            f"[{analysis_id[:8]}] STT V2 diarización: "
-                            f"{len(segments)} segmentos, {len(all_words)} palabras"
-                        )
-                    else:
-                        # chirp_2 sin diarización: agrupar en oraciones, speaker vacío por ahora
-                        # (se llenará con Gemini enrichment en _transcribe_audio_segmented)
-                        conf = (
-                            sum(w.get('confidence', 0) for w in all_words) / len(all_words)
-                            if all_words else 0.0
-                        )
-                        segments = self._split_into_sentences(
-                            " ".join(w['word'] for w in all_words),
-                            all_words, round(conf, 3), language
-                        )
-                        logger.info(
-                            f"[{analysis_id[:8]}] STT V2 sin diarización: "
-                            f"{len(segments)} segmentos (speakers asignados por Gemini)"
-                        )
-                else:
-                    # Sin words: crear segmentos desde las frases completas
-                    for result in transcript.results:
-                        if not result.alternatives:
-                            continue
-                        alt = result.alternatives[0]
-                        text = alt.transcript.strip()
-                        if not text:
-                            continue
-                        segments.append({
-                            'text': text,
-                            'start_time': 0.0,
-                            'end_time': 0.0,
-                            'confidence': round(alt.confidence, 3) if hasattr(alt, 'confidence') else 0.0,
-                            'speaker': '',
-                            'language': 'es',
-                            'words': [],
-                        })
-
-            return segments
-
-        finally:
-            # Limpiar blob temporal si se creó
-            if _temp_blob:
-                try:
-                    _temp_blob.delete()
-                except Exception:
-                    pass
-
-    def _group_words_into_speaker_segments(
-        self, all_words: List[Dict[str, Any]], language: str = "es"
-    ) -> List[Dict[str, Any]]:
-        """
-        Agrupa palabras con speaker_tag en segmentos contiguos por hablante.
-        Crea un nuevo segmento cuando cambia el speaker_tag.
-        Luego sub-segmenta turnos muy largos por puntuación final.
-        """
-        if not all_words:
-            return []
-
-        MAX_SEGMENT_WORDS = 60  # forzar corte si un turno es demasiado largo
-
-        raw_segments: List[Dict[str, Any]] = []
-        current_speaker = all_words[0].get('speaker_tag', 0)
-        current_words: List[Dict[str, Any]] = [all_words[0]]
-
-        for w in all_words[1:]:
-            w_speaker = w.get('speaker_tag', 0)
-            if w_speaker != current_speaker:
-                # Cambio de hablante → flush
-                raw_segments.append(self._flush_word_group(
-                    current_words, f"SPEAKER_{current_speaker}", language
-                ))
-                current_speaker = w_speaker
-                current_words = [w]
-            else:
-                current_words.append(w)
-
-        # Flush último grupo
-        if current_words:
-            raw_segments.append(self._flush_word_group(
-                current_words, f"SPEAKER_{current_speaker}", language
-            ))
-
-        # Sub-segmentar turnos muy largos por puntuación
-        final_segments: List[Dict[str, Any]] = []
-        for seg in raw_segments:
-            words = seg.get('words', [])
-            if len(words) <= MAX_SEGMENT_WORDS:
-                final_segments.append(seg)
-                continue
-
-            # Dividir por puntuación final (. ? !)
-            sub_group: List[Dict[str, Any]] = []
-            for w in words:
-                sub_group.append(w)
-                is_end = any(w['word'].rstrip().endswith(p) for p in ('.', '?', '!', '...', '…'))
-                if (is_end and len(sub_group) >= 5) or len(sub_group) >= MAX_SEGMENT_WORDS:
-                    final_segments.append(self._flush_word_group(sub_group, seg['speaker'], language))
-                    sub_group = []
-            if sub_group:
-                final_segments.append(self._flush_word_group(sub_group, seg['speaker'], language))
-
-        return [s for s in final_segments if s.get('text', '').strip()]
-
-    @staticmethod
-    def _flush_word_group(words: List[Dict[str, Any]], speaker: str, language: str = "es") -> Dict[str, Any]:
-        """Convierte un grupo de palabras en un segmento."""
-        text = ' '.join(w['word'] for w in words).strip()
-        avg_conf = sum(w.get('confidence', 0) for w in words) / len(words) if words else 0
-        return {
-            'text': text,
-            'start_time': round(words[0]['start_time'], 3) if words else 0.0,
-            'end_time': round(words[-1]['end_time'], 3) if words else 0.0,
-            'confidence': round(avg_conf, 3),
-            'speaker': speaker,
-            'language': language,
-            'words': words,
-        }
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # GEMINI ENRICHMENT — Identifica hablantes por nombre
     # ═══════════════════════════════════════════════════════════════════════════
 
     def _assign_speakers_with_gemini(
@@ -1330,17 +626,13 @@ class AudioAnalyzer:
             if not self._gemini or not self._gemini.disponible:
                 logger.info(f"[{analysis_id[:8]}] Gemini no disponible para asignación de hablantes")
                 return segments
-            response = self._gemini._retry_with_backoff(
-                self._gemini.client.models.generate_content,
-                model=self._gemini._model_name,
-                contents=prompt,
-            )
+            raw = self._gemini.chat([{"role": "user", "content": prompt}], json_mode=True)
 
-            if not response or not getattr(response, 'text', ''):
+            if not raw:
                 logger.warning(f"[{analysis_id[:8]}] Gemini asignación: respuesta vacía")
                 return segments
 
-            raw = response.text.strip()
+            raw = raw.strip()
             raw = re.sub(r'^```(?:json)?\s*\n?', '', raw)
             raw = re.sub(r'\n?\s*```$', '', raw)
             data = _json.loads(raw)
@@ -1452,77 +744,17 @@ class AudioAnalyzer:
         try:
             use_video = bool(video_path and os.path.exists(video_path))
 
-            if use_video:
-                # Usar Gemini Vision con el video para identificar visualmente
-                from google import genai
-                from google.genai import types as genai_types
-                import mimetypes
+            if not self._gemini or not self._gemini.disponible:
+                logger.info(f"[{analysis_id[:8]}] Gemini no disponible para enriquecimiento")
+                return segments
 
-                api_key = os.getenv('GEMINI_API_KEY')
-                if not api_key:
-                    raise Exception("GEMINI_API_KEY no configurada")
+            raw = self._gemini.chat([{"role": "user", "content": prompt}], json_mode=True)
 
-                client = genai.Client(api_key=api_key)
-                mime_type = mimetypes.guess_type(video_path)[0] or 'video/mp4'
-
-                file_mb = os.path.getsize(video_path) / (1024 * 1024)
-                logger.info(f"[{analysis_id[:8]}] Enriquecimiento: subiendo video {file_mb:.1f} MB a Gemini...")
-
-                with open(video_path, 'rb') as f:
-                    media_file = client.files.upload(
-                        file=f,
-                        config=genai_types.UploadFileConfig(mime_type=mime_type),
-                    )
-
-                for _ in range(60):
-                    if media_file.state.name != "PROCESSING":
-                        break
-                    time.sleep(3)
-                    media_file = client.files.get(name=media_file.name)
-
-                if media_file.state.name != "ACTIVE":
-                    raise Exception(f"Video no activo: {media_file.state.name}")
-
-                vision_prompt = (
-                    "Tienes acceso al VIDEO de esta conversación. "
-                    "Usa las caras, nombres visibles en pantalla, y cualquier pista visual "
-                    "para identificar quién es cada hablante.\n\n" + prompt
-                )
-
-                model_name = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[
-                        genai_types.Part.from_uri(file_uri=media_file.uri, mime_type=mime_type),
-                        vision_prompt,
-                    ],
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0,
-                        response_mime_type="application/json",
-                    ),
-                )
-
-                try:
-                    client.files.delete(name=media_file.name)
-                except Exception:
-                    pass
-            else:
-                # Sin video: usar Gemini solo con texto
-                if not self._gemini or not self._gemini.disponible:
-                    logger.info(f"[{analysis_id[:8]}] Gemini no disponible para enriquecimiento")
-                    return segments
-
-                response = self._gemini._retry_with_backoff(
-                    self._gemini.client.models.generate_content,
-                    model=self._gemini._model_name,
-                    contents=prompt,
-                )
-
-            if not response or not getattr(response, 'text', ''):
+            if not raw:
                 logger.warning(f"[{analysis_id[:8]}] Gemini enriquecimiento: respuesta vacía")
                 return segments
 
-            raw = response.text.strip()
+            raw = raw.strip()
             raw = re.sub(r'^```(?:json)?\s*\n?', '', raw)
             raw = re.sub(r'\n?\s*```$', '', raw)
             data = _json.loads(raw)
@@ -1683,15 +915,11 @@ class AudioAnalyzer:
 
             import json
 
-            response = self._gemini._retry_with_backoff(
-                self._gemini.client.models.generate_content,
-                model=self._gemini._model_name,
-                contents=prompt,
-            )
+            response = self._gemini.chat([{"role": "user", "content": prompt}], json_mode=True)
 
-            if response and response.text:
+            if response:
                 # Limpiar respuesta (misma lógica robusta que _transcribe_with_gemini)
-                text = response.text.strip()
+                text = response.strip()
                 text = re.sub(r'^```(?:json)?\s*\n?', '', text)
                 text = re.sub(r'\n?\s*```$', '', text)
                 # Eliminar caracteres de control (salvo \n \r \t) que invalidan el JSON
@@ -1816,14 +1044,10 @@ class AudioAnalyzer:
                 "}"
             )
 
-            response = self._gemini._retry_with_backoff(
-                self._gemini.client.models.generate_content,
-                model=self._gemini._model_name,
-                contents=prompt,
-            )
+            response = self._gemini.chat([{"role": "user", "content": prompt}], json_mode=True)
 
-            if response and response.text:
-                text = response.text.strip()
+            if response:
+                text = response.strip()
                 text = re.sub(r'^```(?:json)?\s*\n?', '', text)
                 text = re.sub(r'\n?\s*```$', '', text)
                 text = text.strip()
@@ -1986,46 +1210,10 @@ class AudioAnalyzer:
         Valor por defecto: 'es'.
         """
         try:
-            from google.cloud import speech_v1
-
-            # Extraer muestra de 30s al segundo 10 (evitar intro silenciosa)
-            start_offset = min(10.0, total_duration * 0.1)
-            sample_duration = min(30.0, total_duration - start_offset)
-            if sample_duration < 3.0:
-                return "es"
-
-            with tempfile.NamedTemporaryFile(suffix=".flac", delete=False, dir=self._tmp_dir) as tmp:
-                sample_path = tmp.name
-
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-i", audio_path,
-                    "-ss", str(start_offset),
-                    "-t", str(sample_duration),
-                    "-ar", "16000", "-ac", "1",
-                    "-c:a", "flac", sample_path,
-                ],
-                capture_output=True, timeout=60, check=True,
-            )
-
-            with open(sample_path, "rb") as f:
-                audio_bytes = f.read()
-            os.unlink(sample_path)
-
-            client = speech_v1.SpeechClient()
-            audio = speech_v1.RecognitionAudio(content=audio_bytes)
-            config = speech_v1.RecognitionConfig(
-                encoding=speech_v1.RecognitionConfig.AudioEncoding.FLAC,
-                sample_rate_hertz=16000,
-                language_code="es-ES",
-                alternative_language_codes=["en-US", "pt-BR", "fr-FR", "de-DE", "it-IT"],
-                enable_automatic_punctuation=False,
-                model="latest_short",
-            )
-            response = client.recognize(config=config, audio=audio)
-            if response.results:
-                lang_code = response.results[0].language_code  # e.g. "es-ES"
-                return lang_code.split("-")[0].lower() if lang_code else "es"
+            # Ruta local: la transcripción usa Whisper local configurado en español.
+            # No hay detección de idioma independiente en el stack local; se transcribe
+            # con el idioma por defecto y se reporta 'es'.
+            return "es"
         except Exception as e:
             logger.warning(f"⚠️ _detect_language error (usando 'es'): {e}")
         return "es"
@@ -2046,69 +1234,81 @@ class AudioAnalyzer:
         }
         return _map.get(lang.lower(), "es-ES")
 
-    def _upload_transcription_to_gcs(self, text: str, analysis_id: str) -> str:
+    def _upload_transcription_to_storage(self, text: str, analysis_id: str) -> str:
         """
-        Guarda la transcripción completa en GCS.
-        Retorna la URL gs:// del blob creado.
+        Guarda la transcripción completa en storage local.
+        Retorna la URL del blob creado.
         """
-        bucket_name = os.getenv('GCP_BUCKET_NAME', '')
+        bucket_name = os.getenv('S3_BUCKET', '')
         if not bucket_name:
-            raise ValueError("GCP_BUCKET_NAME no configurado")
+            raise ValueError("S3_BUCKET no configurado")
         blob_path = f"audio_analysis/{analysis_id}/full_transcription.txt"
-        bucket = self._gcs_client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_string(text.encode("utf-8"), content_type="text/plain; charset=utf-8")
-        gcs_url = f"gs://{bucket_name}/{blob_path}"
-        logger.info(f"[{analysis_id[:8]}] Transcripción guardada en GCS: {gcs_url} ({len(text):,} chars)")
-        return gcs_url
+        url = self._storage.upload_from_bytes(
+            text.encode("utf-8"), blob_path, content_type="text/plain; charset=utf-8"
+        )
+        if not url:
+            raise Exception(f"No se pudo subir transcripción a storage: {blob_path}")
+        storage_url = f"s3://{bucket_name}/{blob_path}"
+        logger.info(f"[{analysis_id[:8]}] Transcripción guardada en storage: {storage_url} ({len(text):,} chars)")
+        return storage_url
 
     def _load_full_transcription(self, analysis) -> str:
         """
-        Carga la transcripción completa desde GCS si full_transcription_gcs_url está
+        Carga la transcripción completa desde storage local si full_transcription_url está.
         presente; si no, retorna analysis.full_transcription directamente.
         """
-        gcs_url = getattr(analysis, 'full_transcription_gcs_url', '')
-        if gcs_url and gcs_url.startswith('gs://'):
+        storage_url = getattr(analysis, 'full_transcription_url', '')
+        if storage_url:
             try:
-                # Parsear bucket y blob
-                path = gcs_url[5:]  # quitar "gs://"
-                parts = path.split("/", 1)
-                if len(parts) != 2:
-                    raise ValueError(f"URL GCS inválida: {gcs_url}")
-                bucket_name, blob_path = parts[0], parts[1]
-                bucket = self._gcs_client.bucket(bucket_name)
-                blob = bucket.blob(blob_path)
-                text = blob.download_as_bytes().decode("utf-8")
+                # Parse bucket and object key from S3, filesystem, or bare paths.
+                candidate = storage_url.split("://", 1)[-1]
+                blob_path = candidate
+                if "/" in candidate:
+                    parts = candidate.split("/", 1)
+                    blob_path = parts[1]
+                with tempfile.NamedTemporaryFile(
+                    suffix=".txt", delete=False, dir=self._tmp_dir
+                ) as tmp:
+                    local_path = tmp.name
+                if not self._storage.descargar_archivo(blob_path, local_path):
+                    raise Exception(f"No se pudo descargar {blob_path}")
+                with open(local_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                try:
+                    os.unlink(local_path)
+                except Exception:
+                    pass
                 logger.info(
-                    f"[{analysis.id[:8]}] Transcripción cargada desde GCS: {len(text):,} chars"
+                    f"[{analysis.id[:8]}] Transcripción cargada desde storage: {len(text):,} chars"
                 )
                 return text
             except Exception as e:
-                logger.warning(f"⚠️ Error cargando transcripción desde GCS: {e}")
+                logger.warning(f"⚠️ Error cargando transcripción desde storage: {e}")
         return getattr(analysis, 'full_transcription', '') or ''
 
-    def _download_audio_from_gcs(self, gcs_url: str) -> str:
+    def _download_audio_from_storage(self, storage_url: str) -> str:
         """
-        Descarga audio FLAC desde GCS a un archivo temporal.
+        Descarga audio FLAC desde storage local a un archivo temporal.
         Valida que la URL sea del bucket configurado.
         Retorna la ruta local del archivo.
         """
-        bucket_name = os.getenv('GCP_BUCKET_NAME', '')
-        if not gcs_url.startswith('gs://'):
-            raise ValueError(f"URL GCS inválida: {gcs_url}")
-        path = gcs_url[5:]
-        parts = path.split("/", 1)
-        if len(parts) != 2:
-            raise ValueError(f"URL GCS malformada: {gcs_url}")
-        remote_bucket, blob_path = parts[0], parts[1]
-        if bucket_name and remote_bucket != bucket_name:
-            raise ValueError(f"Bucket no autorizado: {remote_bucket}")
+        bucket_name = os.getenv('S3_BUCKET', '')
+        blob_path = storage_url
+        remote_bucket = ""
+        if any(storage_url.startswith(p) for p in ("s3://", "file://")):
+            path = storage_url.split("://", 1)[1]
+            if "/" in path:
+                parts = path.split("/", 1)
+                remote_bucket, blob_path = parts[0], parts[1]
+            else:
+                blob_path = path
+            if bucket_name and remote_bucket and remote_bucket != bucket_name:
+                raise ValueError(f"Bucket no autorizado: {remote_bucket}")
         with tempfile.NamedTemporaryFile(suffix=".flac", delete=False, dir=self._tmp_dir) as tmp:
             local_path = tmp.name
-        bucket = self._gcs_client.bucket(remote_bucket)
-        blob = bucket.blob(blob_path)
-        blob.download_to_filename(local_path)
-        logger.info(f"Audio descargado desde GCS: {gcs_url} → {local_path}")
+        if not self._storage.descargar_archivo(blob_path, local_path):
+            raise Exception(f"No se pudo descargar {blob_path}")
+        logger.info(f"Audio descargado desde storage: {storage_url} → {local_path}")
         return local_path
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -2119,24 +1319,18 @@ class AudioAnalyzer:
         self, segments: List, analysis_id: str
     ) -> None:
         """
-        Genera embeddings de texto para cada segmento con Gemini text-embedding-004
-        y los almacena como Vector en el campo 'embedding' del documento Firestore.
+        Genera embeddings de texto para cada segmento con el gateway local
+        (vLLM 32B / bge-m3) y los almacena en la columna 'embedding' de PostgreSQL/pgvector.
         Procesa en batches de 50 para respetar límites de API.
         """
         if not segments:
             return
 
         try:
-            from google.cloud.firestore_v1.vector import Vector
-            from google import genai
-            from google.genai import types as genai_types
-
-            api_key = os.getenv('GEMINI_API_KEY', '')
-            if not api_key:
-                logger.warning(f"[{analysis_id[:8]}] GEMINI_API_KEY no encontrada, omitiendo embeddings")
+            if not self._gemini:
+                logger.warning(f"[{analysis_id[:8]}] Gateway no disponible, omitiendo embeddings")
                 return
 
-            client = genai.Client(api_key=api_key)
             batch_size = 50
             total = len(segments)
             stored = 0
@@ -2145,13 +1339,7 @@ class AudioAnalyzer:
                 batch = segments[i:i + batch_size]
                 texts = [s.text[:500] for s in batch]  # Limitar texto por token budget
 
-                response = client.models.embed_content(
-                    model="text-embedding-004",
-                    contents=texts,
-                    config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
-                )
-
-                embeddings = response.embeddings
+                embeddings = self._gemini.embed(texts)
                 if len(embeddings) != len(batch):
                     logger.warning(
                         f"[{analysis_id[:8]}] Batch {i}: esperados {len(batch)} embeddings, "
@@ -2162,7 +1350,7 @@ class AudioAnalyzer:
                 for seg, emb in zip(batch, embeddings):
                     try:
                         self._repo.actualizar_embedding_segmento(
-                            analysis_id, seg.id, Vector(emb.values)
+                            analysis_id, seg.id, list(emb)
                         )
                         stored += 1
                     except Exception as _se:
@@ -2184,35 +1372,23 @@ class AudioAnalyzer:
         self, analysis_id: str, question: str, limit: int = 20
     ) -> List:
         """
-        Búsqueda vectorial en Firestore usando find_nearest con distancia COSINE.
-        Genera embedding de la pregunta y busca los segmentos más similares.
+        Búsqueda vectorial en PostgreSQL/pgvector con distancia COSINE.
+        Genera embedding de la pregunta con el gateway local y busca los segmentos más similares.
         Retorna lista de segmentos entidad; si falla, retorna lista vacía.
         """
         try:
-            from google import genai
-            from google.genai import types as genai_types
-            from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-
-            api_key = os.getenv('GEMINI_API_KEY', '')
-            if not api_key:
+            if not self._gemini:
                 return []
 
-            client = genai.Client(api_key=api_key)
-            response = client.models.embed_content(
-                model="text-embedding-004",
-                contents=[question[:500]],
-                config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
-            )
-            if not response.embeddings:
+            embeddings = self._gemini.embed([question[:500]])
+            if not embeddings:
                 return []
 
-            query_vector = response.embeddings[0].values
-            from google.cloud.firestore_v1.vector import Vector
-
+            query_vector = list(embeddings[0])
             results = self._repo.buscar_por_vector(
                 analysis_id=analysis_id,
-                vector=Vector(query_vector),
-                distance_measure=DistanceMeasure.COSINE,
+                vector=query_vector,
+                distance_measure="COSINE",
                 limit=limit,
             )
             return results
@@ -2253,154 +1429,3 @@ class AudioAnalyzer:
     # ═══════════════════════════════════════════════════════════════════════════
     # UTILIDADES: TRANSCRIPCIÓN PARALELA (audios > 15 min)
     # ═══════════════════════════════════════════════════════════════════════════
-
-    def _transcribe_audio_parallel(
-        self,
-        audio_path: str,
-        analysis_id: str,
-        total_duration: float,
-        language: str = "es",
-    ) -> List[Dict[str, Any]]:
-        """
-        Divide el audio en chunks de 10 min con 5 s de solapamiento y los
-        transcribe en paralelo (hasta 4 workers simultáneos) con STT V1.
-        Ajusta timestamps por offset de chunk y deduplica el solapamiento.
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        CHUNK_DURATION = 600     # 10 min
-        OVERLAP = 5              # 5 s de solapamiento para continuidad
-        MAX_WORKERS = 4
-
-        # Calcular offsets de chunks
-        chunks: List[Dict[str, Any]] = []
-        offset = 0.0
-        while offset < total_duration:
-            duration = min(CHUNK_DURATION, total_duration - offset)
-            if duration < 5:
-                break
-            chunks.append({"offset": offset, "duration": duration})
-            offset += CHUNK_DURATION - OVERLAP
-
-        if not chunks:
-            return []
-
-        logger.info(
-            f"[{analysis_id[:8]}] Transcripción paralela: {len(chunks)} chunks × "
-            f"{CHUNK_DURATION // 60} min, {MAX_WORKERS} workers"
-        )
-
-        bcp47 = self._lang_to_bcp47(language)
-        bucket_name = os.getenv('GCP_BUCKET_NAME', '')
-
-        def _transcribe_chunk(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
-            offset_s = chunk["offset"]
-            dur_s = chunk["duration"]
-            chunk_idx = int(offset_s // CHUNK_DURATION)
-
-            # Extraer chunk como FLAC
-            with tempfile.NamedTemporaryFile(suffix=".flac", delete=False, dir=self._tmp_dir) as tmp:
-                chunk_path = tmp.name
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-i", audio_path,
-                        "-ss", str(offset_s), "-t", str(dur_s),
-                        "-ar", "16000", "-ac", "1", "-c:a", "flac", chunk_path,
-                    ],
-                    capture_output=True, timeout=120, check=True,
-                )
-
-                from google.cloud import speech_v1
-                from google.cloud import storage as gcs_storage
-
-                # Subir chunk a GCS
-                _gcs = gcs_storage.Client()
-                blob_path = f"audio_analysis/{analysis_id}/chunk_{chunk_idx:04d}.flac"
-                bucket = _gcs.bucket(bucket_name)
-                blob = bucket.blob(blob_path)
-                blob.upload_from_filename(chunk_path)
-                gcs_uri = f"gs://{bucket_name}/{blob_path}"
-
-                speech_client = speech_v1.SpeechClient()
-                audio = speech_v1.RecognitionAudio(uri=gcs_uri)
-                config = speech_v1.RecognitionConfig(
-                    encoding=speech_v1.RecognitionConfig.AudioEncoding.FLAC,
-                    sample_rate_hertz=16000,
-                    language_code=bcp47,
-                    enable_automatic_punctuation=True,
-                    enable_word_time_offsets=True,
-                    enable_word_confidence=True,
-                    model="latest_long",
-                    use_enhanced=True,
-                )
-                timeout_s = max(600, int(dur_s * 0.2))
-                operation = speech_client.long_running_recognize(config=config, audio=audio)
-                response = operation.result(timeout=timeout_s)
-
-                segs: List[Dict[str, Any]] = []
-                for result in response.results:
-                    if not result.alternatives:
-                        continue
-                    alt = result.alternatives[0]
-                    text = alt.transcript.strip()
-                    if not text:
-                        continue
-                    words_data = []
-                    for w in (alt.words or []):
-                        words_data.append({
-                            'word': w.word,
-                            'start_time': w.start_time.total_seconds() + offset_s,
-                            'end_time': w.end_time.total_seconds() + offset_s,
-                            'confidence': round(w.confidence, 3) if hasattr(w, 'confidence') else 0.0,
-                            'speaker_tag': getattr(w, 'speaker_tag', 0),
-                        })
-                    conf = round(alt.confidence, 3) if hasattr(alt, 'confidence') else 0.0
-                    sub = self._split_into_sentences(text, words_data, conf, language)
-                    segs.extend(sub)
-
-                # Limpiar blob temporal
-                try:
-                    blob.delete()
-                except Exception:
-                    pass
-                return segs
-
-            except Exception as _ce:
-                logger.warning(f"[{analysis_id[:8]}] Chunk {chunk_idx} error: {_ce}")
-                return []
-            finally:
-                try:
-                    os.unlink(chunk_path)
-                except Exception:
-                    pass
-
-        # Ejecutar en paralelo
-        all_results: Dict[int, List[Dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            future_map = {
-                pool.submit(_transcribe_chunk, c): i for i, c in enumerate(chunks)
-            }
-            for future in as_completed(future_map):
-                idx = future_map[future]
-                try:
-                    all_results[idx] = future.result()
-                except Exception as _fe:
-                    logger.warning(f"[{analysis_id[:8]}] Future chunk {idx} falló: {_fe}")
-                    all_results[idx] = []
-
-        # Concatenar en orden y deduplicar solapamiento (por start_time)
-        merged: List[Dict[str, Any]] = []
-        seen_starts: set = set()
-        for idx in sorted(all_results.keys()):
-            for seg in all_results[idx]:
-                key_s = round(seg.get('start_time', 0.0), 1)
-                if key_s not in seen_starts:
-                    seen_starts.add(key_s)
-                    merged.append(seg)
-
-        merged.sort(key=lambda s: s.get('start_time', 0.0))
-        logger.info(
-            f"[{analysis_id[:8]}] Transcripción paralela completa: {len(merged)} segmentos de {len(chunks)} chunks"
-        )
-        return merged

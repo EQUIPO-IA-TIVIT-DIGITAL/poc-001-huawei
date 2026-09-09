@@ -1,6 +1,6 @@
 """
 Caso de Uso: Procesamiento de Videos con IA Optimizado v4.0 (Pipeline Pattern)
-Pipeline: Compresión → Early Exit → Parallel (Gemini Vision + Conditional Speech) → Decisor
+Pipeline: Compresión → Early Exit → Parallel (Visión IA + Speech condicional) → Decisor
 """
 
 import json
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class StorageProtocol(Protocol):
     def upload_video(self, file_path: str, video_id: str, content_type: str = None, metadata: dict = None) -> Optional[str]: ...
     def is_available(self) -> bool: ...
-    def get_gcs_uri(self, gcs_path: str) -> str: ...
+    def get_storage_uri(self, storage_path: str) -> str: ...
     def generate_signed_url(self, blob_name: str, expiration_minutes: int = 60) -> Optional[str]: ...
 
 
@@ -75,16 +75,16 @@ class ProcesarVideoUseCase:
         self.compressor = VideoCompressor()
         self.cache = get_video_analysis_cache()
         self.blacklist_config = self._cargar_blacklist_config()
-        self.gcp_enabled = self._check_adapters_available()
+        self.adapters_available = self._check_adapters_available()
 
         # Initialize Pipeline components
-        self.preparator = VideoPreparator(self.compressor, self.storage, self.gcp_enabled)
+        self.preparator = VideoPreparator(self.compressor, self.storage, self.adapters_available)
         self.verifier = VideoVerifier()
         self.scanner = VideoQuickScanner(self.gemini, self.frame_extractor)
         self.analyzer = VideoDeepAnalyzer(self.gemini, self.speech, self.frame_extractor, self.compressor)
         self.decider = VideoDecider(self.gemini, self.blacklist_config)
 
-        if self.gcp_enabled:
+        if self.adapters_available:
             logger.info("✅ Procesador de Videos v4.0 OPTIMIZADO habilitado (Pipeline Pattern)")
         else:
             logger.warning("⚠️ Procesador de videos en modo local")
@@ -106,7 +106,7 @@ class ProcesarVideoUseCase:
         self,
         video: Video,
         blacklist_path: str = None,
-        upload_to_gcs: bool = True,
+        upload_to_storage: bool = True,
         progress_callback=None,
         check_cancel=None,
     ) -> Video:
@@ -155,18 +155,18 @@ class ProcesarVideoUseCase:
 
             # PASO 1
             report(1, "Preparando video (compresión + upload)...", "running")
-            prep_res = self.preparator.process_preparation(video, archivo_analisis, contexto_analisis, upload_to_gcs)
+            prep_res = self.preparator.process_preparation(video, archivo_analisis, contexto_analisis, upload_to_storage)
             if prep_res.get("error"):
                 report(1, prep_res["msg"], "error")
                 video.agregar_metadatos("resultado_ia", "ERROR_STORAGE")
                 video.agregar_metadatos("razon_rechazo", prep_res["msg"])
                 video.actualizar_estado(EstadoVideo.ERROR)
-                self._guardar_en_firestore(video)
+                self._guardar_en_db(video)
                 return video
             
             compressed_path = prep_res.get("compressed_path")
             archivo_analisis = prep_res.get("archivo_analisis")
-            report(1, "Video preparado", "success", {"gcs_uri": prep_res.get("gcs_uri")})
+            report(1, "Video preparado", "success", {"storage_uri": prep_res.get("storage_uri")})
 
             # PASO 2
             report(2, "Verificando duración...", "running")
@@ -176,7 +176,7 @@ class ProcesarVideoUseCase:
                 video.agregar_metadatos("resultado_ia", "RECHAZADO_DURACION")
                 video.agregar_metadatos("razon_rechazo", verif_res["msg"])
                 video.actualizar_estado(EstadoVideo.ERROR)
-                self._guardar_en_firestore(video)
+                self._guardar_en_db(video)
                 return video
             report(2, f"Duración: {verif_res['duracion_segundos']}s ✓", "success")
 
@@ -191,18 +191,18 @@ class ProcesarVideoUseCase:
                 video.agregar_metadatos("decision_automatica", True)
                 video.agregar_metadatos("early_exit", True)
                 video.actualizar_estado(EstadoVideo.RECHAZADO)
-                self._guardar_en_firestore(video)
+                self._guardar_en_db(video)
                 self.cache.store_analysis(video_hash, {"resultado_ia": "RECHAZADO", "razon_rechazo": msg, "early_exit": True})
                 return video
             report(3, "Escaneo rápido: Sin violaciones obvias", "success")
 
             # PASO 4
-            report(4, "Análisis profundo (Gemini Vision + Audio en paralelo)...", "running")
+            report(4, "Análisis profundo (Visión IA + Audio en paralelo)...", "running")
             self.analyzer.analyze(archivo_analisis, video, verif_res["duracion_segundos"], contexto_analisis)
             report(4, "Análisis profundo completado", "success")
 
             # PASO 5
-            report(5, "Gemini tomando decisión final...", "running")
+            report(5, "IA tomando decisión final...", "running")
             dec_res = self.decider.decide(video, contexto_analisis)
             
             resultado_ia = video.metadatos_ia.get("resultado_ia")
@@ -213,7 +213,7 @@ class ProcesarVideoUseCase:
             else:
                 report(5, f"Enviado a revisión manual", "warning")
 
-            self._guardar_en_firestore(video)
+            self._guardar_en_db(video)
 
             confianza_resultado = dec_res.get("confianza", 0)
             if resultado_ia not in ["ERROR_PROCESAMIENTO", "ERROR_STORAGE"] and confianza_resultado >= 0.70:
@@ -235,7 +235,7 @@ class ProcesarVideoUseCase:
             video.agregar_metadatos("error", str(e))
             if video.estado not in [EstadoVideo.COMPLETADO, EstadoVideo.ERROR]:
                 video.actualizar_estado(EstadoVideo.ERROR)
-            self._guardar_en_firestore(video)
+            self._guardar_en_db(video)
             self._actualizar_stats_workspace(video)
             raise
 
@@ -303,15 +303,15 @@ class ProcesarVideoUseCase:
             video.agregar_metadatos("speech_analysis", cached["speech_analysis"])
 
         self.preparator._generar_thumbnail_safe(video)
-        if self.gcp_enabled and self.storage and self.storage.is_available():
-            gcs_uri = self.storage.upload_video(
+        if self.adapters_available and self.storage and self.storage.is_available():
+            storage_uri = self.storage.upload_video(
                 file_path=video.ruta_archivo,
                 video_id=video.id,
                 content_type=f"video/{video.formato}",
                 metadata={"cached": "true"},
             )
-            if gcs_uri:
-                video.agregar_metadatos("gcs_uri", gcs_uri)
+            if storage_uri:
+                video.agregar_metadatos("storage_uri", storage_uri)
                 blob_name = f"videos/{video.id}.{video.formato}"
                 signed_url = self.storage.generate_signed_url(blob_name, expiration_minutes=1440)
                 if signed_url:
@@ -325,16 +325,16 @@ class ProcesarVideoUseCase:
         else:
             video.actualizar_estado(EstadoVideo.EN_REVISION)
 
-        self._guardar_en_firestore(video)
+        self._guardar_en_db(video)
         report(5, f"Resultado (cache): {resultado}", "success")
         return video
 
-    def _guardar_en_firestore(self, video: Video) -> bool:
-        if self.gcp_enabled and self.firestore and self.firestore.is_available():
+    def _guardar_en_db(self, video: Video) -> bool:
+        if self.adapters_available and self.firestore and self.firestore.is_available():
             try:
                 return self.firestore.save_video(video)
             except Exception as e:
-                logger.warning(f"Error guardando en Firestore: {e}")
+                logger.warning(f"Error guardando en la base de datos: {e}")
         return False
 
     def _actualizar_stats_workspace(self, video: Video):

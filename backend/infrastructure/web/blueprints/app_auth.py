@@ -172,20 +172,6 @@ def _clear_failed_logins(username: str):
 # Crear Blueprint
 auth_bp = Blueprint("auth", __name__, template_folder="../ui/templates")
 
-# ===== Azure AD (Entra ID) Config =====
-AZURE_ENABLED = os.getenv("APP_ENV", "") != "local" and bool(os.getenv("AZURE_CLIENT_ID") and os.getenv("AZURE_CLIENT_ID") != "change-me")
-AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
-AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
-AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
-AZURE_REDIRECT_URI = os.getenv("AZURE_REDIRECT_URI", "http://localhost:5001/api/auth/microsoft/callback")
-AZURE_AUTHORITY = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}" if AZURE_TENANT_ID else ""
-AZURE_SCOPES = ["User.Read"]
-# URL del frontend para redirigir después de login exitoso
-# APP_BASE_URL apunta al frontend (ej: http://localhost:5174)
-# VITE_API_BASE_URL apunta al backend, NO usarlo aquí
-FRONTEND_URL = os.getenv("APP_BASE_URL", "http://localhost:5174")
-
-
 # Handler global para OPTIONS en todos los endpoints de este blueprint
 @auth_bp.before_request
 def handle_preflight():
@@ -351,24 +337,34 @@ def check_auth():
 
     # Construir URL de foto de perfil como data URL (funciona con <img> sin CORS)
     foto_url = usuario.foto_url or ""
-    if foto_url.startswith("gs://") or foto_url.startswith("https://storage.googleapis.com/"):
+    if foto_url.startswith(("s3://", "file://")):
         try:
             import base64
-            from infrastructure.adapters.gcp_storage import GCPStorage
-            gcs = GCPStorage()
-            # Normalizar a gs:// si viniera como URL pública
-            if foto_url.startswith("https://storage.googleapis.com/"):
-                path_part = foto_url.replace("https://storage.googleapis.com/", "")
-                foto_url = f"gs://{path_part}"
-            # Extraer blob path de gs://bucket/path/to/blob
-            path_without_scheme = foto_url[5:]  # Remove "gs://"
-            parts = path_without_scheme.split("/", 1)
-            if len(parts) >= 2:
-                blob = gcs.bucket.blob(parts[1])
-                image_bytes = blob.download_as_bytes()
-                content_type = blob.content_type or "image/jpeg"
+            import tempfile
+            from pathlib import Path
+            from infrastructure.dependencies import get_storage_adapter
+            storage = get_storage_adapter()
+
+            blob_path = None
+            if foto_url.startswith("s3://"):
+                parts = foto_url.split("/", 3)
+                blob_path = parts[3] if len(parts) > 3 else parts[-1]
+            else:
+                blob_path = foto_url.removeprefix("file://")
+
+            if blob_path:
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    storage.descargar_archivo(blob_path, tmp_path)
+                    image_bytes = Path(tmp_path).read_bytes()
+                finally:
+                    try:
+                        Path(tmp_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 encoded = base64.b64encode(image_bytes).decode("utf-8")
-                foto_url = f"data:{content_type};base64,{encoded}"
+                foto_url = f"data:image/jpeg;base64,{encoded}"
             else:
                 foto_url = ""
         except Exception as e:
@@ -556,222 +552,16 @@ def perfil():
         flash("Usuario no encontrado", "danger")
         return redirect(url_for("auth.login"))
 
-    return render_template("perfil.html", usuario=usuario)
-
-
-# ============================================================
-# Azure AD / Microsoft Entra ID — OAuth2 Authorization Code
-# ============================================================
-
-@auth_bp.route("/api/auth/microsoft/login", methods=["GET", "OPTIONS"])
-def microsoft_login():
-    if not AZURE_ENABLED:
-        return jsonify({"error": "Azure AD deshabilitado en local (APP_ENV=local)"}), 404
-    """
-    Inicia el flujo OAuth2 con Azure AD.
-    Redirige al usuario a la página de login de Microsoft.
-    """
-    if not AZURE_CLIENT_ID or not AZURE_TENANT_ID or not AZURE_CLIENT_SECRET:
-        logger.error("Azure AD no está configurado (faltan variables de entorno)")
+    if request.headers.get("Accept") == "application/json":
         return jsonify({
-            "success": False,
-            "error": "Autenticación con Microsoft no configurada. Contacta al administrador."
-        }), 503
+            "success": True,
+            "user": {
+                "id": usuario.id,
+                "username": usuario.username,
+                "rol": usuario.rol.value,
+                "nombre_completo": usuario.nombre_completo,
+                "email": usuario.email,
+            },
+        }), 200
 
-    try:
-        import msal
-        msal_app = msal.ConfidentialClientApplication(
-            client_id=AZURE_CLIENT_ID,
-            client_credential=AZURE_CLIENT_SECRET,
-            authority=AZURE_AUTHORITY,
-        )
-        # Guardar un estado en sesión para prevenir CSRF
-        import secrets
-        state = secrets.token_urlsafe(32)
-        session["azure_oauth_state"] = state
-
-        auth_url = msal_app.get_authorization_request_url(
-            scopes=AZURE_SCOPES,
-            redirect_uri=AZURE_REDIRECT_URI,
-            state=state,
-        )
-        logger.info("Iniciando login con Microsoft desde ip=%s", _client_ip())
-        return redirect(auth_url)
-
-    except Exception as e:
-        logger.error("Error iniciando login con Microsoft: %s", str(e))
-        return jsonify({"success": False, "error": "Error al conectar con Microsoft"}), 500
-
-
-@auth_bp.route("/api/auth/microsoft/callback", methods=["GET", "OPTIONS"])
-def microsoft_callback():
-    """
-    Callback de Azure AD tras autenticación exitosa.
-    Intercambia el código por tokens, obtiene perfil, crea sesión.
-    """
-    if not AZURE_ENABLED:
-        return jsonify({"error": "Azure AD deshabilitado en local (APP_ENV=local)"}), 404
-    import msal
-    import requests as http_requests
-
-    # Verificar errores de Microsoft
-    error = request.args.get("error")
-    if error:
-        error_description = request.args.get("error_description", "Error desconocido")
-        logger.warning("Azure AD retornó error: %s — %s", error, error_description)
-        frontend_error_url = f"{FRONTEND_URL}/login?error=microsoft_denied"
-        return redirect(frontend_error_url)
-
-    # Verificar código de autorización
-    code = request.args.get("code")
-    if not code:
-        logger.warning("Callback de Microsoft sin código de autorización ip=%s", _client_ip())
-        return redirect(f"{FRONTEND_URL}/login?error=no_code")
-
-    # Verificar state anti-CSRF
-    returned_state = request.args.get("state", "")
-    expected_state = session.pop("azure_oauth_state", None)
-    if not expected_state or returned_state != expected_state:
-        logger.warning("State CSRF inválido en callback de Microsoft ip=%s", _client_ip())
-        return redirect(f"{FRONTEND_URL}/login?error=invalid_state")
-
-    try:
-        # Intercambiar código por token de acceso
-        msal_app = msal.ConfidentialClientApplication(
-            client_id=AZURE_CLIENT_ID,
-            client_credential=AZURE_CLIENT_SECRET,
-            authority=AZURE_AUTHORITY,
-        )
-        token_result = msal_app.acquire_token_by_authorization_code(
-            code=code,
-            scopes=AZURE_SCOPES,
-            redirect_uri=AZURE_REDIRECT_URI,
-        )
-
-        if "error" in token_result:
-            logger.error(
-                "Error obteniendo token de Azure AD: %s — %s",
-                token_result.get("error"),
-                token_result.get("error_description"),
-            )
-            return redirect(f"{FRONTEND_URL}/login?error=token_failed")
-
-        access_token = token_result.get("access_token")
-        if not access_token:
-            logger.error("Token de acceso vacío en respuesta de Azure AD")
-            return redirect(f"{FRONTEND_URL}/login?error=token_empty")
-
-        # Obtener perfil del usuario desde Microsoft Graph
-        graph_response = http_requests.get(
-            "https://graph.microsoft.com/v1.0/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
-
-        if not graph_response.ok:
-            logger.error("Error consultando Microsoft Graph: %s", graph_response.status_code)
-            return redirect(f"{FRONTEND_URL}/login?error=graph_failed")
-
-        ms_user = graph_response.json()
-        azure_id = ms_user.get("id", "")
-
-        # Microsoft Graph puede devolver el email en "mail" o en "userPrincipalName".
-        # Para usuarios invitados/externos, "userPrincipalName" tiene el formato:
-        #   usuario_dominio.com#EXT#@tenant.onmicrosoft.com
-        # En ese caso, "mail" tiene el email real. Si "mail" está vacío,
-        # extraemos el email real del UPN antes del token "#EXT#".
-        raw_mail = (ms_user.get("mail") or "").strip()
-        raw_upn = (ms_user.get("userPrincipalName") or "").strip()
-
-        if raw_mail:
-            email = raw_mail.lower()
-        elif "#EXT#" in raw_upn:
-            # Extraer email real: "jean_gmail.com#EXT#@..." → "jean@gmail.com"
-            local_part = raw_upn.split("#EXT#")[0]
-            # El UPN usa _ como separador en lugar de @ en el dominio
-            # Formato: nombre_dominio.com → nombre@dominio.com
-            # Buscamos el último _ que separa usuario de dominio
-            last_underscore = local_part.rfind("_")
-            if last_underscore != -1:
-                email = (local_part[:last_underscore] + "@" + local_part[last_underscore + 1:]).lower()
-            else:
-                email = local_part.lower()
-        else:
-            email = raw_upn.lower()
-
-        nombre_completo = (ms_user.get("displayName") or
-                           f"{ms_user.get('givenName', '')} {ms_user.get('surname', '')}").strip()
-
-        if not email or "@" not in email:
-            logger.error(
-                "Microsoft Graph no retornó email válido. mail=%r upn=%r azure_id=%s",
-                raw_mail, raw_upn, azure_id,
-            )
-            return redirect(f"{FRONTEND_URL}/login?error=no_email")
-
-        logger.info(
-            "Login Microsoft exitoso para email=%s azure_id=%s ip=%s",
-            _mask_identifier(email),
-            azure_id[:8] + "...",
-            _client_ip(),
-        )
-
-        # Buscar o crear usuario en Firestore
-        user_repo = get_user_repository()
-        usuario = user_repo.obtener_por_email(email)
-
-        if usuario:
-            # Usuario existente — actualizar datos de AD y último acceso
-            usuario.ultimo_acceso = datetime.now().isoformat()
-            usuario.azure_id = azure_id
-            usuario.auth_provider = "azure_ad"
-            if nombre_completo and usuario.nombre_completo != nombre_completo:
-                usuario.nombre_completo = nombre_completo
-            user_repo.guardar(usuario)
-            logger.info("Usuario AD existente actualizado: email=%s", _mask_identifier(email))
-        else:
-            # Usuario nuevo — crear automáticamente con rol SOCIO
-            username = email.split("@")[0].replace(".", "_").replace("-", "_").lower()
-            # Asegurar username único
-            base_username = username
-            counter = 1
-            while user_repo.obtener_por_username(username):
-                username = f"{base_username}_{counter}"
-                counter += 1
-
-            usuario = Usuario(
-                id=str(uuid.uuid4()),
-                username=username,
-                nombre_completo=nombre_completo or username,
-                email=email,
-                rol=RolUsuario.SOCIO,
-                password_hash="",          # Sin contraseña local
-                azure_id=azure_id,
-                auth_provider="azure_ad",
-                fecha_creacion=datetime.now().isoformat(),
-                ultimo_acceso=datetime.now().isoformat(),
-            )
-            user_repo.guardar(usuario)
-            logger.info(
-                "Nuevo usuario AD creado: username=%s email=%s",
-                _mask_identifier(username),
-                _mask_identifier(email),
-            )
-
-        # Crear sesión Flask (igual que el login local)
-        session.clear()
-        session.permanent = True
-        session["usuario_id"] = usuario.id
-        session["username"] = usuario.username
-        session["rol"] = usuario.rol.value
-        session["nombre_completo"] = usuario.nombre_completo
-        session["auth_time"] = datetime.now().isoformat()
-        session["auth_provider"] = "azure_ad"
-
-        # Redirigir al frontend (dashboard)
-        return redirect(f"{FRONTEND_URL}/dashboard")
-
-    except Exception as e:
-        logger.error("Error inesperado en callback de Microsoft: %s", str(e), exc_info=True)
-        return redirect(f"{FRONTEND_URL}/login?error=server_error")
-
+    return redirect("/perfil")

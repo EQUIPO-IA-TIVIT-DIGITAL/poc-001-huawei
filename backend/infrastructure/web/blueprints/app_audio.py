@@ -43,22 +43,11 @@ from domain.entities import (
 )
 logger = logging.getLogger(__name__)
 
-# GCS client lazy (local usa MinIO) — evitar import google.cloud al top si offline
-try:
-    from google.cloud import storage as _gcs_storage
-    _gcs_client = _gcs_storage.Client()
-except Exception:
-    _gcs_storage = None  # type: ignore
-    _gcs_client = None  # type: ignore
 
-
-def _get_gcs_client():
-    if _gcs_client is not None:
-        return _gcs_client
-    # local fallback: intenta MinIO
+def _get_storage_client():
     try:
-        from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
-        return MinioStorageAdapter()
+        from infrastructure.dependencies import get_storage_adapter
+        return get_storage_adapter()
     except Exception:
         return None
 
@@ -260,7 +249,7 @@ def iniciar_upload():
             titulo=titulo,
             descripcion=descripcion,
             video_filename=data["filename"],
-            video_gcs_url=upload_data["gcs_path"],
+            video_url=upload_data["storage_path"],
             video_duration=client_video_duration,
             estado=EstadoAudioAnalysis.PENDING,
             created_at=datetime.utcnow().isoformat(),
@@ -273,6 +262,15 @@ def iniciar_upload():
                 "error": f"El archivo excede la duración máxima de 2 horas ({hours:.1f}h)"
             }), 400
 
+        response_data = {
+            "success": True,
+            "analysis_id": analysis_id,
+            "upload_url": upload_data["upload_url"],
+            "storage_path": upload_data["storage_path"],
+            "storage_bucket": upload_data["bucket"],
+            "blob_name": upload_data["blob_name"],
+            "expiration_hours": upload_data["expiration_hours"],
+        }
         try:
             _get_audio_repo().guardar_analisis(analysis)
             elapsed_ms = (time.perf_counter() - request_start) * 1000
@@ -284,15 +282,11 @@ def iniciar_upload():
                 "error": "No se pudo guardar el análisis. Verifica la configuración de Firestore."
             }), 500
 
-        return jsonify({
-            "success": True,
-            "analysis_id": analysis_id,
-            "upload_url": upload_data["upload_url"],
-            "gcs_path": upload_data["gcs_path"],
-            "bucket": upload_data["bucket"],
-            "blob_name": upload_data["blob_name"],
-            "expiration_hours": upload_data["expiration_hours"],
-        }), 200
+        try:
+            return jsonify(response_data), 200
+        except Exception:
+            _get_audio_repo().eliminar_analisis(analysis_id)
+            raise
 
     except Exception as e:
         elapsed_ms = (time.perf_counter() - request_start) * 1000
@@ -359,7 +353,7 @@ def subir_video_stream():
 
         logger.info(f"[{vid}]    Archivo: {file.filename} ({mb_size:.1f} MB)")
 
-        # Upload a GCS
+        # Upload al almacenamiento.
         USE_MULTIPART_THRESHOLD = 100 * 1024 * 1024
         use_multipart = file_size and file_size > USE_MULTIPART_THRESHOLD
 
@@ -367,7 +361,7 @@ def subir_video_stream():
             logger.info(f"[{vid}]    📤 MULTIPART UPLOAD ({mb_size:.1f} MB)")
             result = _get_multipart_service().subir_archivo_multipart(
                 file_stream=file.stream,
-                gcs_path=analysis.video_gcs_url,
+                storage_path=analysis.video_url,
                 content_type=file.content_type or "application/octet-stream",
                 chunk_size=50 * 1024 * 1024,
                 max_workers=5,
@@ -377,7 +371,7 @@ def subir_video_stream():
             logger.info(f"[{vid}]    📤 Upload simple ({mb_size:.1f} MB)")
             bytes_uploaded = _get_upload_service().subir_archivo_directo(
                 file_stream=file.stream,
-                gcs_path=analysis.video_gcs_url,
+                storage_path=analysis.video_url,
                 content_type=file.content_type or "application/octet-stream",
             )
 
@@ -434,15 +428,15 @@ def completar_upload():
             return jsonify({"success": False, "error": "No tienes permiso para este análisis"}), 403
 
         # Verificar upload
-        if analysis.video_gcs_url:
-            status_ok = _get_upload_service().verificar_upload_completo(analysis.video_gcs_url)
+        if analysis.video_url:
+            status_ok = _get_upload_service().verificar_upload_completo(analysis.video_url)
             if not status_ok:
                 return jsonify({"success": False, "error": "Archivo no subido completamente"}), 400
 
-        logger.info(f"[{vid}]    ✅ Archivo verificado en GCS")
+        logger.info(f"[{vid}]    ✅ Archivo verificado en el almacenamiento")
 
         # Obtener metadata
-        metadata = _get_upload_service().obtener_metadata_archivo(analysis.video_gcs_url)
+        metadata = _get_upload_service().obtener_metadata_archivo(analysis.video_url)
         if metadata:
             size_mb = metadata.get("size_mb")
             if size_mb is None and metadata.get("size"):
@@ -610,22 +604,29 @@ def eliminar_analisis(analysis_id: str):
 
         _get_audio_repo().eliminar_analisis(analysis_id)
 
-        # Eliminar archivos de GCS
+        # Eliminar archivos del almacenamiento.
         try:
             # Eliminar video original y audio extraído explícitamente
-            if analysis.video_gcs_url:
-                _get_upload_service().eliminar_archivo(analysis.video_gcs_url)
-            if analysis.audio_gcs_url:
-                _get_upload_service().eliminar_archivo(analysis.audio_gcs_url)
+            if analysis.video_url:
+                _get_upload_service().eliminar_archivo(analysis.video_url)
+            if analysis.audio_url:
+                _get_upload_service().eliminar_archivo(analysis.audio_url)
 
-            bucket_name = os.getenv('GCP_BUCKET_NAME')
-            if bucket_name:
-                bucket = _get_gcs_client().bucket(bucket_name)
-                blobs = bucket.list_blobs(prefix=f"audio_analysis/{analysis_id}/")
-                for blob in blobs:
-                    blob.delete()
+            storage = _get_storage_client()
+            if storage and storage.is_available():
+                prefix = f"audio_analysis/{analysis_id}/"
+                if hasattr(storage, "_get_client"):
+                    c = storage._get_client()
+                    resp = c.list_objects_v2(Bucket=storage.bucket, Prefix=prefix)
+                    for obj in resp.get("Contents", []):
+                        storage.delete_file(obj["Key"])
+                elif hasattr(storage, "base_dir"):
+                    from pathlib import Path
+                    for p in Path(storage.base_dir).rglob("audio_analysis/*"):
+                        if p.is_file() and analysis_id in str(p):
+                            storage.delete_file(str(p.relative_to(storage.base_dir)))
         except Exception as e:
-            logger.warning(f"⚠️ Error limpiando GCS: {e}")
+            logger.warning(f"⚠️ Error limpiando almacenamiento: {e}")
 
         return jsonify({"success": True, "message": "Análisis eliminado"}), 200
 

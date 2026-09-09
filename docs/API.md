@@ -89,7 +89,7 @@ Returns the currently authenticated user.
 
 ### POST /api/v1/videos/upload-url
 
-Generates a GCS signed URL for direct-to-bucket upload.
+Generates an S3-compatible signed URL for direct object-storage upload.
 
 **Request body**
 
@@ -115,7 +115,7 @@ Generates a GCS signed URL for direct-to-bucket upload.
   "success": true,
   "data": {
     "video_id": "string",
-    "upload_url": "https://storage.googleapis.com/...",
+    "upload_url": "http://minio:9000/...",
     "expires_at": "2026-01-27T15:00:00Z",
     "blob_name": "videos/.../..."
   }
@@ -126,7 +126,7 @@ Generates a GCS signed URL for direct-to-bucket upload.
 
 ### GET /socio/media/:video_id
 
-Streams the video file from GCS through the backend. Supports HTTP Range requests for seek operations (RFC 7233).
+Streams the video file from local object storage through the backend. Supports HTTP Range requests for seek operations (RFC 7233).
 
 **Authentication**: Session cookie required.
 
@@ -143,11 +143,11 @@ Streams the video file from GCS through the backend. Supports HTTP Range request
 | 200 | Full file stream (`Content-Type: video/mp4`) |
 | 206 | Partial content (range request honored) |
 | 403 | Video does not belong to the authenticated user |
-| 404 | Video not found or GCS object missing |
+| 404 | Video not found or storage object missing |
 
 **Notes**
 
-This endpoint replaces GCS Signed URLs, which require a service account private key unavailable in Application Default Credentials (ADC) environments. The backend streams GCS blob content in 1 MB chunks. The `video_url` field returned by all other endpoints is a relative path (`/socio/media/<video_id>`) that points here.
+The backend streams object content in 1 MB chunks. The `video_url` field returned by all other endpoints is a relative path (`/socio/media/<video_id>`) that points here.
 
 ---
 
@@ -204,8 +204,8 @@ Initiates a resumable upload for a surveillance video and creates the database r
 {
   "success": true,
   "video_id": "sec_video_20260204_060000_a1b2c3d4",
-  "upload_url": "https://storage.googleapis.com/...",
-  "gcs_path": "gs://bucket/path",
+  "upload_url": "http://minio:9000/...",
+  "storage_uri": "s3://bucket/path",
   "expiration_hours": 24
 }
 ```
@@ -238,7 +238,7 @@ Returns details and processing status of a security video.
 
 ### DELETE /api/security/videos/:video_id
 
-Deletes a security video and its associated events and GCS objects.
+Deletes a security video and its associated events and stored objects.
 
 ---
 
@@ -325,8 +325,8 @@ Initiates a resumable upload for an operational process video.
 {
   "success": true,
   "analysis_id": "string",
-  "upload_url": "https://storage.googleapis.com/...",
-  "gcs_path": "gs://bucket/path"
+  "upload_url": "http://minio:9000/...",
+  "storage_uri": "s3://bucket/path"
 }
 ```
 
@@ -334,7 +334,7 @@ Initiates a resumable upload for an operational process video.
 
 ### POST /api/operational/upload/stream
 
-Proxies file content directly to GCS. Alternative to the resumable upload flow for smaller files or clients that cannot follow the GCS resumable upload protocol.
+Proxies file content directly to object storage. Alternative to the resumable upload flow for smaller files or clients that cannot use a signed upload URL.
 
 ---
 
@@ -372,7 +372,7 @@ Returns full analysis detail including events and report URL. Completed analyses
 
 ### DELETE /api/operational/analyses/:analysis_id
 
-Deletes analysis, associated events, and GCS objects.
+Deletes analysis, associated events, and stored objects.
 
 ---
 
@@ -419,13 +419,13 @@ Returns detected operational events with pagination. Supports cursor-based pagin
 
 ### GET /api/operational/analyses/:analysis_id/video-url
 
-Returns a GCS Signed URL for direct video playback. Requires a service account with Storage Object Viewer permissions and a private key. In ADC-only environments, use the `stream-video` endpoint instead.
+Returns an S3-compatible signed URL for direct video playback.
 
 ---
 
 ### GET /api/operational/analyses/:analysis_id/stream-video
 
-Redirects to the GCS video stream URL (302 redirect).
+Redirects to the object-storage video stream URL (302 redirect).
 
 ---
 
@@ -474,7 +474,7 @@ Re-queues a failed analysis. Only valid when `estado` is `error`.
 
 ### POST /api/operational/analyses/compare
 
-Compares two analyses side-by-side. Returns aggregated statistics and a Gemini-generated comparison narrative.
+Compares two analyses side-by-side. Returns aggregated statistics and an AI-generated comparison narrative.
 
 **Request body**
 
@@ -536,7 +536,7 @@ Initiates upload and creates the audio analysis record.
 
 ### POST /api/audio/upload/stream
 
-Proxies the file upload to GCS (for CORS-restricted clients).
+Proxies the file upload to object storage (for CORS-restricted clients).
 
 ---
 
@@ -562,7 +562,7 @@ Returns full analysis detail.
 
 ### DELETE /api/audio/analyses/:analysis_id
 
-Deletes analysis and associated GCS objects.
+Deletes analysis and associated stored objects.
 
 ---
 
@@ -664,7 +664,7 @@ Deletes workspace. Videos inside are not deleted but become unassigned.
 
 ### POST /workspaces/:workspace_id/chat/validate
 
-Initiates AI-driven validation of workspace context configuration. Gemini analyzes the workspace settings and returns clarifying questions or a validation summary.
+Initiates AI-driven validation of workspace context configuration. The local gateway analyzes the workspace settings and returns clarifying questions or a validation summary.
 
 **Request body**: none (uses current workspace configuration)
 
@@ -691,7 +691,7 @@ Initiates AI-driven validation of workspace context configuration. Gemini analyz
 | Registration | 20 per hour |
 | File uploads | 20 per hour |
 | General API | 60 per minute |
-| AI chat (Gemini) | 15 per minute |
+| AI chat | 15 per minute |
 | Status polling | 3000 per minute |
 | Video details | 120 per minute |
 | Global (per-user) | 100 per minute / 1000 per hour / 10000 per day |

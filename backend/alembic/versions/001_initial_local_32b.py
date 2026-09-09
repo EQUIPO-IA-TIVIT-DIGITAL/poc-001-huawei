@@ -9,8 +9,10 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+    is_postgresql = op.get_bind().dialect.name == "postgresql"
+    if is_postgresql:
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     # videos
     op.create_table("videos",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -21,7 +23,7 @@ def upgrade():
         sa.Column("estado", sa.String(32), index=True),
         sa.Column("resultado_ia", sa.Text),
         sa.Column("razon_rechazo", sa.Text),
-        sa.Column("gcs_uri", sa.String(500)),
+        sa.Column("storage_uri", sa.String(500)),
         sa.Column("s3_uri", sa.String(500)),
         sa.Column("duracion_segundos", sa.Float),
         sa.Column("created_at", sa.DateTime, server_default=sa.func.now()),
@@ -88,7 +90,7 @@ def upgrade():
         sa.Column("end_time", sa.Float),
         sa.Column("text", sa.Text),
         sa.Column("speaker", sa.String(64)),
-        sa.Column("embedding", Vector(1024)),
+        sa.Column("embedding", Vector(1024) if is_postgresql else sa.JSON),
     )
     op.create_table("security_videos",
         sa.Column("id", sa.String(64), primary_key=True),
@@ -107,8 +109,8 @@ def upgrade():
         sa.Column("risk_level", sa.String(16)),
         sa.Column("metadata_json", sa.JSON),
     )
-    # HNSW index para bge-m3
-    op.execute("CREATE INDEX audio_segments_embedding_idx ON audio_segments USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)")
+    if is_postgresql:
+        op.execute("CREATE INDEX audio_segments_embedding_idx ON audio_segments USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)")
 
 def downgrade():
     for t in ["security_events","security_videos","audio_segments","audio_analyses","operational_events","operational_analyses","workspaces","users","videos"]:

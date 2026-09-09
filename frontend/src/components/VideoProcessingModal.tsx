@@ -26,10 +26,6 @@ import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 
-// Fallback video for demo purposes
-const MOCK_VIDEO_URL =
-    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
-
 // Definición de pasos con iconos y tiempos estimados
 interface ProcessingStep {
     id: number;
@@ -45,7 +41,7 @@ const PROCESSING_STEPS: ProcessingStep[] = [
         label: 'Preparación',
         icon: Upload,
         estimatedTime: '~5s',
-        description: 'Compresión + Upload a GCS + Thumbnail',
+        description: 'Compresión + carga al almacenamiento local + miniatura',
     },
     {
         id: 2,
@@ -66,7 +62,7 @@ const PROCESSING_STEPS: ProcessingStep[] = [
         label: 'Análisis Profundo',
         icon: Brain,
         estimatedTime: '~15s',
-        description: 'Gemini Vision + Audio en paralelo',
+        description: 'IA de visión local + audio en paralelo',
     },
     {
         id: 5,
@@ -541,16 +537,24 @@ export function VideoProcessingModal({
                     <div className="md:col-span-3 space-y-6 flex flex-col">
                         {/* Video Player */}
                         <div className="aspect-video bg-black rounded-xl overflow-hidden flex items-center justify-center relative shadow-md border border-gray-200">
-                            <video
-                                ref={videoRef}
-                                src={videoUrl || MOCK_VIDEO_URL}
-                                className="w-full h-full object-contain"
-                                autoPlay
-                                muted
-                                loop
-                                playsInline
-                                controls
-                            />
+                            {videoUrl ? (
+                                <video
+                                    ref={videoRef}
+                                    src={videoUrl}
+                                    className="w-full h-full object-contain"
+                                    autoPlay
+                                    muted
+                                    loop
+                                    playsInline
+                                    controls
+                                />
+                            ) : (
+                                <div className="flex flex-col items-center gap-2 px-6 text-center text-gray-300">
+                                    <FileVideo size={48} />
+                                    <p className="font-medium text-white">Video no disponible</p>
+                                    <p className="text-sm">La URL del video estará disponible al finalizar el procesamiento.</p>
+                                </div>
+                            )}
 
                             {state.status === 'error' && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">

@@ -34,9 +34,7 @@ class _SecurityJsonFormatter(logging.Formatter):
 class SecurityAnalysisLogger:
     """
     Logger dedicado para el análisis de videos de seguridad.
-    Guarda logs detallados en archivo separado con trazabilidad completa.
-    
-    IMPORTANTE: Escribe tanto a archivo como a stdout para visibilidad en docker logs
+    Emite a stdout por defecto; archivo local solo si SECURITY_LOG_TO_FILE=true.
     """
     
     _instance: Optional['SecurityAnalysisLogger'] = None
@@ -57,9 +55,7 @@ class SecurityAnalysisLogger:
         self.max_bytes = int(os.getenv('SECURITY_LOG_MAX_BYTES', str(20 * 1024 * 1024)))
         self.backup_count = int(os.getenv('SECURITY_LOG_BACKUP_COUNT', '10'))
         self.force_flush = os.getenv('SECURITY_LOG_FORCE_FLUSH', 'false').lower() == 'true'
-        
-        # Crear directorio si no existe
-        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_to_file = os.getenv('SECURITY_LOG_TO_FILE', 'false').lower() == 'true'
         
         # Logger principal
         self.logger = logging.getLogger('security_analysis')
@@ -73,17 +69,18 @@ class SecurityAnalysisLogger:
         )
         date_format = '%Y-%m-%d %H:%M:%S'
         
-        # Handler de archivo (log principal)
-        main_log_file = os.path.join(self.log_dir, 'security_analysis.log')
-        file_handler = RotatingFileHandler(
-            main_log_file,
-            maxBytes=self.max_bytes,
-            backupCount=self.backup_count,
-            encoding='utf-8',
-        )
-        file_handler.setFormatter(logging.Formatter(detailed_format, date_format))
-        file_handler.setLevel(getattr(logging, self.log_level.upper(), logging.DEBUG))
-        self.logger.addHandler(file_handler)
+        if self.log_to_file:
+            os.makedirs(self.log_dir, exist_ok=True)
+            main_log_file = os.path.join(self.log_dir, 'security_analysis.log')
+            file_handler = RotatingFileHandler(
+                main_log_file,
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count,
+                encoding='utf-8',
+            )
+            file_handler.setFormatter(logging.Formatter(detailed_format, date_format))
+            file_handler.setLevel(getattr(logging, self.log_level.upper(), logging.DEBUG))
+            self.logger.addHandler(file_handler)
         
         # Handler de consola - respeta SECURITY_LOG_LEVEL
         console_handler = logging.StreamHandler(sys.stdout)
@@ -96,17 +93,17 @@ class SecurityAnalysisLogger:
         console_handler.setLevel(getattr(logging, self.log_level.upper(), logging.DEBUG))
         self.logger.addHandler(console_handler)
         
-        # Log de errores separado
-        error_log_file = os.path.join(self.log_dir, 'security_errors.log')
-        error_handler = RotatingFileHandler(
-            error_log_file,
-            maxBytes=self.max_bytes,
-            backupCount=self.backup_count,
-            encoding='utf-8',
-        )
-        error_handler.setFormatter(logging.Formatter(detailed_format, date_format))
-        error_handler.setLevel(logging.ERROR)
-        self.logger.addHandler(error_handler)
+        if self.log_to_file:
+            error_log_file = os.path.join(self.log_dir, 'security_errors.log')
+            error_handler = RotatingFileHandler(
+                error_log_file,
+                maxBytes=self.max_bytes,
+                backupCount=self.backup_count,
+                encoding='utf-8',
+            )
+            error_handler.setFormatter(logging.Formatter(detailed_format, date_format))
+            error_handler.setLevel(logging.ERROR)
+            self.logger.addHandler(error_handler)
         
         # Forzar flush inmediato
         if self.force_flush:
@@ -204,9 +201,9 @@ class SecurityAnalysisLogger:
         self.info(f"   Cámara: {video_data.get('nombre_camara', 'N/A')}")
         self.info(f"   Ubicación: {video_data.get('ubicacion', 'N/A')}")
         self.info(f"   Duración: {video_data.get('duracion_segundos', 0):.1f}s")
-        ruta_gcs = video_data.get('ruta_gcs', 'N/A')
-        gcs_filename = ruta_gcs.split('/')[-1] if ruta_gcs and ruta_gcs != 'N/A' else ruta_gcs
-        self.info(f"   GCS File: {gcs_filename}")
+        storage_path = video_data.get('storage_path', 'N/A')
+        storage_filename = storage_path.split('/')[-1] if storage_path and storage_path != 'N/A' else storage_path
+        self.info(f"   Storage file: {storage_filename}")
     
     def log_motion_detection(self, num_segments: int, segments: list):
         """Log de resultados de detección de movimiento"""

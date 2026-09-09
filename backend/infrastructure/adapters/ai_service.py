@@ -1,6 +1,6 @@
 """
 Servicio de IA Unificado - TIVIT Video
-Maneja Gemini como servicio principal de IA.
+Maneja el gateway local como servicio principal de IA.
 Proporciona una interfaz única para todas las operaciones de IA.
 """
 import os
@@ -14,41 +14,42 @@ logger = logging.getLogger(__name__)
 
 class AIService:
     """
-    Servicio de IA basado en Gemini.
-    
-    Este servicio actúa como wrapper del GeminiAdapter,
+    Servicio de IA basado en el gateway local.
+
+    Este servicio actúa como wrapper del gateway,
     proporcionando una interfaz unificada para el resto de la aplicación.
     """
     
     def __init__(self):
-        # Gemini (servicio principal)
-        self._gemini = None
-        if os.getenv('GEMINI_API_KEY'):
-            try:
-                from infrastructure.adapters.gemini_adapter import get_gemini_adapter
-                self._gemini = get_gemini_adapter()
-            except Exception as e:
-                logger.warning(f"No se pudo cargar Gemini: {e}")
+        # Gateway local (servicio principal)
+        self._gateway = None
+        try:
+            from infrastructure.adapters.ai_gateway import get_ai_gateway
+            self._gateway = get_ai_gateway()
+        except Exception as e:
+            logger.warning(f"No se pudo cargar AI Gateway: {e}")
         
         # Estado
-        self._gemini_available = self._gemini and self._gemini.disponible
+        self._gateway_available = self._gateway and self._gateway.disponible
         
         logger.info(
             f"🤖 AI Service inicializado: "
-            f"Gemini={'✅' if self._gemini_available else '❌'}"
+            f"Gateway={'✅' if self._gateway_available else '❌'}"
         )
     
     @property
     def disponible(self) -> bool:
         """Verifica si el servicio de IA está disponible"""
-        return self._gemini_available
+        return bool(self._gateway_available)
     
     def get_status(self) -> Dict[str, Any]:
         """Retorna el estado del servicio de IA"""
+        from config.app_config import AppConfig
+
         return {
-            'gemini': {
-                'available': self._gemini_available,
-                'model': 'gemini-2.0-flash' if self._gemini_available else None
+            'ai': {
+                'available': self._gateway_available,
+                'provider': AppConfig.AI_PROVIDER
             },
             'any_available': self.disponible
         }
@@ -60,7 +61,7 @@ class AIService:
         duracion_segundos: int = None
     ) -> str:
         """
-        Genera un título para el video usando Gemini.
+        Genera un título para el video usando IA.
         
         Args:
             nombre_archivo: Nombre original del archivo
@@ -72,9 +73,9 @@ class AIService:
         """
         etiquetas = etiquetas or []
         
-        if self._gemini_available:
-            titulo = self._gemini.generar_titulo(nombre_archivo, etiquetas, duracion_segundos)
-            logger.info(f"📝 Título (Gemini): {titulo}")
+        if self._gateway_available:
+            titulo = self._gateway.generar_titulo(nombre_archivo, etiquetas, duracion_segundos)
+            logger.info(f"📝 Título (IA): {titulo}")
             return titulo
         
         # Fallback sin IA
@@ -88,18 +89,18 @@ class AIService:
         blacklist: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
-        Decide si aprobar o rechazar un video usando Gemini.
+        Decide si aprobar o rechazar un video usando IA.
         
         Args:
-            analisis: Resultados del análisis de Video Intelligence
+            analisis: Resultados del análisis visual
             blacklist: Configuración de elementos prohibidos
             
         Returns:
             Dict con: aprobado, razon, confianza, modelo
         """
-        if self._gemini_available:
-            resultado = self._gemini.decidir_moderacion(analisis, blacklist)
-            logger.info(f"🔍 Moderación (Gemini): aprobado={resultado.get('aprobado')}")
+        if self._gateway_available:
+            resultado = self._gateway.decidir_moderacion(analisis, blacklist)
+            logger.info(f"🔍 Moderación (IA): aprobado={resultado.get('aprobado')}")
             return resultado
         
         # Sin IA disponible
@@ -114,7 +115,7 @@ class AIService:
     
     def analizar_sentimiento(self, textos: List[str]) -> Dict[str, Any]:
         """
-        Análisis de sentimiento usando Gemini.
+        Análisis de sentimiento usando IA.
         
         Args:
             textos: Textos detectados por OCR
@@ -122,8 +123,8 @@ class AIService:
         Returns:
             Dict con análisis de sentimiento
         """
-        if self._gemini_available:
-            return self._gemini.analizar_sentimiento(textos)
+        if self._gateway_available:
+            return self._gateway.analizar_sentimiento(textos)
         
         return {'sentimiento': 'neutral', 'confianza': 0.0}
     

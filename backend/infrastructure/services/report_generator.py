@@ -15,30 +15,9 @@ import tempfile
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
-import urllib.request
 from urllib.parse import urlparse
 
 from domain.entities import SecurityVideo, EventoSeguridad
-
-# Dominios permitidos para descargas de frames (previene SSRF)
-_ALLOWED_FRAME_HOSTS = frozenset({
-    "storage.googleapis.com",
-    "storage.cloud.google.com",
-})
-
-
-def _is_safe_frame_url(url: str) -> bool:
-    """Valida que la URL solo apunte a dominios de GCS permitidos sobre HTTPS."""
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme != "https":
-            return False
-        host = parsed.netloc.lower().split(":")[0]
-        return host in _ALLOWED_FRAME_HOSTS or any(
-            host.endswith(f".{h}") for h in _ALLOWED_FRAME_HOSTS
-        )
-    except Exception:
-        return False
 
 logger = logging.getLogger(__name__)
 
@@ -699,35 +678,36 @@ class ReportGenerator:
     # ═══════════════════════════════════════════════════════════════
     
     def _download_frame_for_pdf(self, url: str) -> Optional[str]:
-        """Descarga un frame desde URL (GCS signed URL) para insertar en PDF"""
+        """Resolve a local or configured storage frame without HTTP downloads."""
         try:
-            # Si es una ruta local, usarla directamente
             if url.startswith('/') and os.path.exists(url):
                 return url
-            
-            # Si es un URI gs://, no podemos descargarlo con urllib
-            if url.startswith('gs://'):
-                logger.warning(f"Frame con URI gs:// no descargable directamente: {url[:60]}...")
+            parsed = urlparse(url)
+            if parsed.scheme in ("http", "https", "gs"):
+                logger.warning("Frame remoto no permitido: %.80s", url)
                 return None
 
-            # Validar dominio antes de realizar la petición HTTP (previene SSRF)
-            if not _is_safe_frame_url(url):
-                logger.warning("_download_frame_for_pdf: URL rechazada por validación SSRF: %.80s", url)
-                return None
+            if parsed.scheme == "file":
+                local_path = parsed.path
+                return local_path if os.path.exists(local_path) else None
 
-            temp_file = tempfile.NamedTemporaryFile(
-                delete=False, suffix='.jpg', prefix='pdf_frame_'
-            )
+            if parsed.scheme not in ("", "s3"):
+                return None
+            from infrastructure.dependencies import get_storage_adapter
+
+            storage = get_storage_adapter()
+            if not storage or not storage.is_available():
+                return None
+            storage_path = parsed.path.lstrip("/") if parsed.scheme == "s3" else url.lstrip("/")
+            if url.startswith("/socio/media/"):
+                storage_path = url.removeprefix("/socio/media/")
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg", prefix="pdf_frame_")
             temp_path = temp_file.name
             temp_file.close()
-            
-            urllib.request.urlretrieve(url, temp_path)
-            
-            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 100:
-                return temp_path
-            
-            os.remove(temp_path)
-            return None
+            if not storage.descargar_archivo(storage_path, temp_path) or os.path.getsize(temp_path) <= 100:
+                os.remove(temp_path)
+                return None
+            return temp_path
             
         except Exception as e:
             logger.warning(f"No se pudo descargar frame: {e}")

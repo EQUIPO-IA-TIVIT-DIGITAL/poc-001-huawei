@@ -26,6 +26,7 @@ import { VideoDetailsModal } from '../components/VideoDetailsModal';
 import { DonutChart } from '../components/dashboard/DonutChart';
 import { StatsCard } from '../components/dashboard/StatsCard';
 import { toast } from 'sonner';
+import { getApiBaseUrl } from '../lib/backendUrl';
 
 interface VideoData {
     id: string;
@@ -434,7 +435,7 @@ export default function Dashboard() {
                                     <div className="relative aspect-[16/10] bg-slate-100 overflow-hidden">
                                         <img
                                             crossOrigin="use-credentials"
-                                            src={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'}/socio/thumbnail/${video.id}`}
+                                            src={`${getApiBaseUrl()}/socio/thumbnail/${video.id}`}
                                             alt={getVideoTitle(video)}
                                             className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
                                             onError={(e) => {

@@ -1,6 +1,6 @@
 """
 Cache Queries - Funciones de caché para queries frecuentes
-Reduce carga en Firestore/Cloud SQL cacheando datos de alta lectura
+Reduce carga en la base de datos cacheando datos de alta lectura
 """
 from typing import Optional, List, Dict, Any
 from .redis_cache import get_cache_instance, cached
@@ -17,7 +17,7 @@ TTL_ANALYTICS = 600         # 10 minutos
 
 class CacheQueries:
     """
-    Wrapper para queries cacheados a Firestore/Cloud SQL
+    Wrapper para queries cacheados a la base de datos
     """
     
     def __init__(self):
@@ -58,7 +58,7 @@ class CacheQueries:
         Obtiene URL de descarga cacheada
         
         Args:
-            video_path: Path del video en GCS
+            video_path: Path del video en el almacenamiento
             
         Returns:
             URL firmada o None
@@ -71,7 +71,7 @@ class CacheQueries:
         Cachea URL de descarga
         
         Args:
-            video_path: Path del video en GCS
+            video_path: Path del video en el almacenamiento
             url: URL firmada
             ttl: Tiempo de vida
             

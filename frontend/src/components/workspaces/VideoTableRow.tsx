@@ -1,6 +1,7 @@
 import { Clock, MoreHorizontal, Play, Trash2, Video } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '../ui/button';
+import { getApiBaseUrl } from '../../lib/backendUrl';
 
 interface VideoTableRowProps {
     video: any;
@@ -94,7 +95,7 @@ export function VideoTableRow({
                 <div className="h-16 w-28 rounded-xl bg-slate-100 border border-slate-200/60 overflow-hidden flex items-center justify-center relative shadow-sm group-hover:shadow-md transition-all duration-300 group-hover:scale-105">
                     <img
                         crossOrigin="use-credentials"
-                        src={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001'}/socio/thumbnail/${video.id}`}
+                        src={`${getApiBaseUrl()}/socio/thumbnail/${video.id}`}
                         alt={title}
                         className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                         onError={(e) => {

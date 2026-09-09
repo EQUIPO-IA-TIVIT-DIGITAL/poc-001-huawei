@@ -1,6 +1,6 @@
 """
 Servicio de Gestión de Índices para Videos de Seguridad
-Maneja la creación, almacenamiento y carga de índices ligeros en GCS
+Maneja la creación, almacenamiento y carga de índices ligeros
 Arquitectura Lazy: indexar rápido, analizar on-demand
 """
 
@@ -69,17 +69,25 @@ class SecurityIndexManager:
     
     def __init__(self):
         """Inicializa el gestor de índices"""
-        self.gcs_storage = None
+        self._storage = None
+        self._is_minio = False
         self._init_storage()
     
     def _init_storage(self):
-        """Inicializa el servicio de GCS"""
+        """Inicializa el servicio de almacenamiento local"""
         try:
-            from infrastructure.adapters.gcp_storage import GCSStorageAdapter
-            self.gcs_storage = GCSStorageAdapter()
-            logger.info("✅ GCS Storage inicializado para índices")
+            from config.app_config import AppConfig
+            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+            if backend == "minio":
+                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                self._storage = MinioStorageAdapter(AppConfig)
+                self._is_minio = True
+            else:
+                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                self._storage = FilesystemStorageAdapter()
+            logger.info("Storage inicializado para índices")
         except Exception as e:
-            logger.error(f"❌ Error inicializando GCS Storage: {e}")
+            logger.error(f"Error inicializando Storage: {e}")
     
     def create_index(
         self,
@@ -155,44 +163,34 @@ class SecurityIndexManager:
     
     def save_index_to_gcs(self, video_id: str, index_data: Dict[str, Any]) -> str:
         """
-        Guarda el índice en GCS
+        Guarda el índice en almacenamiento
         
         Args:
             video_id: ID del video
             index_data: Datos del índice
         
         Returns:
-            Ruta GCS del índice guardado
+            Ruta del índice guardado
         """
-        if not self.gcs_storage:
-            logger.error("❌ GCS Storage no disponible")
-            raise RuntimeError("GCS Storage no inicializado")
+        if not self._storage:
+            logger.error("Storage no disponible")
+            raise RuntimeError("Storage no inicializado")
         
-        # Ruta en GCS
-        gcs_path = f"security_videos/{video_id}/metadata/index.json"
+        blob_name = f"security_videos/{video_id}/metadata/index.json"
         
         try:
-            # Serializar a JSON
-            json_content = json.dumps(index_data, indent=2, ensure_ascii=False)
-            
-            # Subir a GCS
-            blob = self.gcs_storage.upload_json(
-                gcs_path,
-                index_data,
-                content_type='application/json'
-            )
-            
-            full_path = f"gs://{self.gcs_storage.bucket_name}/{gcs_path}"
-            logger.info(f"✅ Índice guardado en: {full_path}")
-            return full_path
+            json_bytes = json.dumps(index_data, indent=2, ensure_ascii=False).encode("utf-8")
+            self._storage.upload_from_bytes(json_bytes, blob_name, content_type="application/json")
+            logger.info(f"Índice guardado en: {blob_name}")
+            return blob_name
             
         except Exception as e:
-            logger.error(f"❌ Error guardando índice: {e}")
+            logger.error(f"Error guardando índice: {e}")
             raise
     
     def load_index_from_gcs(self, video_id: str) -> Optional[Dict[str, Any]]:
         """
-        Carga un índice desde GCS
+        Carga un índice desde almacenamiento
         
         Args:
             video_id: ID del video
@@ -200,25 +198,42 @@ class SecurityIndexManager:
         Returns:
             Índice como diccionario o None si no existe
         """
-        if not self.gcs_storage:
-            logger.error("❌ GCS Storage no disponible")
+        if not self._storage:
+            logger.error("Storage no disponible")
             return None
         
-        gcs_path = f"security_videos/{video_id}/metadata/index.json"
+        blob_name = f"security_videos/{video_id}/metadata/index.json"
         
         try:
-            # Descargar y parsear
-            index_data = self.gcs_storage.download_json(gcs_path)
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                if self._is_minio:
+                    self._storage.download_file(blob_name, tmp_path)
+                else:
+                    import shutil
+                    from pathlib import Path
+                    shutil.copy2(str(Path(self._storage.base_dir) / blob_name), tmp_path)
+                if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                    return None
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    index_data = json.load(f)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
             
             if index_data:
-                logger.info(f"✅ Índice cargado: {video_id}")
+                logger.info(f"Índice cargado: {video_id}")
                 return index_data
             else:
-                logger.warning(f"⚠️ Índice no encontrado: {video_id}")
+                logger.warning(f"Índice no encontrado: {video_id}")
                 return None
                 
         except Exception as e:
-            logger.error(f"❌ Error cargando índice: {e}")
+            logger.error(f"Error cargando índice: {e}")
             return None
     
     def get_clips_by_classification(

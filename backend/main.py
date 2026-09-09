@@ -1,12 +1,12 @@
 """
 TIVIT Video - Punto de Entrada Principal
-Microservicios de Carga y Administración de Videos con Clean Architecture + GCP
+Microservicios de Carga y Administración de Videos con Clean Architecture + Stack Local
 
 Este archivo configura y ejecuta la aplicación Flask completa con:
 - Microservicio de Carga (app_socio): Formulario de subida de videos
 - Microservicio de Admin (app_admin): Panel de administración
-- Integración con Google Cloud Platform (Cloud Storage, Firestore, Video Intelligence)
-- Repositorio híbrido (memoria + Firestore según disponibilidad)
+- Stack 100% local (PostgreSQL, MinIO, vLLM 32B, Whisper, Redis + RQ)
+- Repositorio SQLAlchemy (Postgres/SQLite)
 """
 
 import os
@@ -33,87 +33,6 @@ from infrastructure.services.logging_service import (
 setup_logging("tivit-video")
 logger = get_logger(__name__)
 
-
-# ===== CONFIGURAR CREDENCIALES GCP DESDE VARIABLE DE ENTORNO =====
-def setup_gcp_credentials():
-    """
-    Si existe GCP_CREDENTIALS_JSON (raw) o GCP_CREDENTIALS_B64 (base64) en env,
-    escribirlo a un archivo temporal seguro para que las librerías de Google lo usen.
-
-    Nota de Seguridad: Se recomienda usar GCP Workload Identity en producción.
-    """
-    import base64
-    import tempfile
-    import os
-
-    creds_content = None
-
-    # 1. Intentar leer Base64 (Más seguro)
-    b64_creds = os.environ.get("GCP_CREDENTIALS_B64")
-    if b64_creds:
-        try:
-            # Decodificar y parsear como string
-            decoded_bytes = base64.b64decode(b64_creds)
-            creds_content = decoded_bytes.decode("utf-8")
-            logger.info("🔑 Detectadas credenciales en formato Base64")
-        except Exception as e:
-            logger.error(f"❌ Error decodificando GCP_CREDENTIALS_B64: {e}")
-
-    # 2. Fallback a JSON raw
-    if not creds_content:
-        creds_content = os.environ.get("GCP_CREDENTIALS_JSON")
-
-    if creds_content:
-        try:
-            # Validar que sea JSON válido
-            credentials = json.loads(creds_content)
-
-            # Escribir a un archivo temporal seguro con permisos restringidos
-            fd, creds_path = tempfile.mkstemp(prefix="gcp-creds-", suffix=".json")
-            with os.fdopen(fd, "w") as f:
-                json.dump(credentials, f)
-            
-            # Asegurar que solo el owner pueda leer/escribir (0o600)
-            os.chmod(creds_path, 0o600)
-
-            # Registrar cleanup del archivo temporal al finalizar el proceso
-            import atexit
-            def _cleanup_creds(path=creds_path):
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception:
-                    pass
-            atexit.register(_cleanup_creds)
-
-            # Configurar variable de entorno para que GCP SDK lo encuentre
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
-            logger.info(
-                f"✅ Credenciales GCP configuradas y archivo seguro generado."
-            )
-            return True
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Error al parsear JSON de credenciales: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error configurando credenciales GCP: {e}")
-            return False
-
-    # Si no hay variables, confiamos en ADC (Workload Identity)
-    logger.info("ℹ️ No se detectaron variables de credenciales GCP explícitas. Confiando en Workload Identity / ADC.")
-    return False
-
-
-# Ejecutar configuración de credenciales (GCP legacy solo si APP_ENV != local)
-_app_env = os.getenv("APP_ENV", os.getenv("FLASK_ENV", ""))
-if _app_env != "local":
-    setup_gcp_credentials()
-    from infrastructure.services.secret_manager import load_secrets
-    load_secrets()
-else:
-    logger.info("ℹ️ APP_ENV=local — GCP credentials/Secret Manager deshabilitados (offline)")
-    def load_secrets():  # type: ignore[no-redef]
-        return None
 
 # Rate limiter compartido
 from infrastructure.rate_limiter import limiter
@@ -170,7 +89,7 @@ def create_app():
 
     if is_production:
         # En producción: solo el origin configurado
-        raw = os.environ.get("CORS_ORIGIN", "https://accessfan-frontend-638512998944.us-central1.run.app")
+        raw = os.environ.get("CORS_ORIGIN", "http://localhost:5173")
         allowed_origins = [o.strip() for o in raw.split(",") if o.strip()]
     else:
         # En desarrollo: Lista explícita de orígenes permitidos
@@ -181,7 +100,6 @@ def create_app():
             "http://127.0.0.1:5174",
             "http://localhost:3000",
             "http://127.0.0.1:3000",
-            "https://accessfan-frontend-638512998944.us-central1.run.app"
         ]
 
     # Configurar CORS con manejo explícito de preflight
@@ -223,8 +141,8 @@ def create_app():
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: https: blob:",
             "font-src 'self' data:",
-            "connect-src 'self' https://storage.googleapis.com",
-            "media-src 'self' https://storage.googleapis.com blob:",
+            "connect-src 'self'",
+            "media-src 'self' blob:",
             "object-src 'none'",
             "base-uri 'self'",
             "form-action 'self'",
@@ -304,11 +222,11 @@ def create_app():
     compress.init_app(app)
     logger.info("Compresión GZIP: HABILITADA")
 
-    # Configuración de sesiones seguras — local HTTP usa Lax, prod HTTPS usa None
+    # HTTPS deployments retain secure cross-site cookies; HTTP development stays usable.
     app.config["SESSION_COOKIE_HTTPONLY"] = True
-    _is_local = os.getenv("APP_ENV") == "local" and not is_production
-    app.config["SESSION_COOKIE_SAMESITE"] = "Lax" if _is_local else "None"
-    app.config["SESSION_COOKIE_SECURE"] = False if _is_local else True
+    https_deployment = is_production or os.getenv("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes", "on")
+    app.config["SESSION_COOKIE_SAMESITE"] = "None" if https_deployment else "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = https_deployment
     app.config["SESSION_COOKIE_DOMAIN"] = None
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
 
@@ -389,10 +307,6 @@ def create_app():
     limiter.init_app(app)
     logger.info("🛡️  Rate Limiting: HABILITADO")
 
-    # ===== GCP OBSERVABILITY (Cloud Trace + Cloud Profiler + Cloud Monitoring) =====
-    from infrastructure.services.gcp_observability import init_observability
-    init_observability(app)
-
     # ===== CREAR DIRECTORIOS NECESARIOS =====
     app.config["UPLOAD_FOLDER"].mkdir(parents=True, exist_ok=True)
 
@@ -409,45 +323,31 @@ def create_app():
 
     video_repository = deps["video_repository"]
     usuario_repository = deps["usuario_repository"]
-    gcp_config = deps["gcp_config"]
-    gcp_storage = deps["gcp_storage"]
-    gcp_firestore = deps["gcp_firestore"]
-
-    # Verificar estado de GCP
-    gcp_enabled = gcp_config.is_gcp_enabled()
+    app_config = deps["app_config"]
+    storage_adapter = deps["storage_adapter"]
+    database_adapter = deps["db_adapter"]
 
     logger.info(
-        f"Repositorio de videos inicializado - Videos en memoria: {video_repository.contar_total()}"
+        f"Repositorio de videos inicializado - Videos: {video_repository.contar_total() if video_repository else 0}"
     )
     logger.info(
-        f"Repositorio de usuarios inicializado - Usuarios: {usuario_repository.contar_total()}"
+        f"Repositorio de usuarios inicializado - Usuarios: {usuario_repository.contar_total() if usuario_repository else 0}"
     )
     logger.info("Procesador de videos inyectado (DI)")
-
-    if gcp_enabled:
-        logger.info(f"Google Cloud Platform: HABILITADO")
-        logger.info(f"   • Proyecto: {gcp_config.PROJECT_ID}")
-        logger.info(
-            f"   • Cloud Storage: {'✓' if gcp_storage.is_available() else '✗'} ({gcp_config.BUCKET_NAME})"
-        )
-        logger.info(f"   • Firestore: {'✓' if gcp_firestore.is_available() else '✗'}")
-    else:
-        logger.warning(f"Google Cloud Platform: DESHABILITADO (modo local)")
+    logger.info("Stack local: SIN servicios GCP")
 
     # ===== AUTO-SYNC: Recuperar videos huérfanos del disco =====
-    if gcp_enabled and gcp_firestore.is_available():
+    if database_adapter and database_adapter.is_available() and video_repository:
         try:
             upload_dir = app.config.get("UPLOAD_FOLDER", str(base_dir / "uploads"))
-            
+
             # Obtener socios registrados desde el repositorio ya inicializado
             try:
                 socios = usuario_repository.obtener_socios()
                 socios_usernames = [s.username for s in socios if hasattr(s, 'username')]
             except Exception:
-                # Fallback: leer directamente de Firestore
-                socios_docs = list(gcp_firestore.db.collection('socios').stream()) if gcp_firestore.db else []
-                socios_usernames = [doc.to_dict().get('username', doc.id) for doc in socios_docs]
-            
+                socios_usernames = []
+
             if socios_usernames:
                 # Sincronizar para el primer socio que tenga videos huérfanos
                 for username in socios_usernames:
@@ -535,8 +435,8 @@ def create_app():
             "script-src 'self'; "
             "style-src 'self'; "
             "style-src-attr 'unsafe-inline'; "
-            "img-src 'self' data: blob: https://storage.googleapis.com; "
-            "connect-src 'self' https://*.googleapis.com https://*.run.app; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'; "
             "font-src 'self'; "
             "object-src 'none'; "
             "base-uri 'self'; "
@@ -631,6 +531,29 @@ def create_app():
         """Health check ligero - solo verifica que el servicio responde"""
         return {"status": "healthy", "service": "TIVIT Video"}, 200
 
+    @app.route("/livez")
+    @limiter.exempt
+    def liveness_check():
+        """Liveness probe: el proceso Flask está vivo."""
+        return {"status": "alive", "service": "TIVIT Video"}, 200
+
+    @app.route("/startupz")
+    @limiter.exempt
+    def startup_check():
+        """Startup probe: la aplicación terminó su inicialización básica."""
+        return {"status": "started", "service": "TIVIT Video"}, 200
+
+    @app.route("/readyz")
+    @limiter.exempt
+    def readiness_check():
+        """Readiness probe: valida dependencias críticas configuradas."""
+        checks = {
+            "database": database_adapter.is_available() if database_adapter and hasattr(database_adapter, "is_available") else False,
+            "storage": storage_adapter.is_available() if storage_adapter and hasattr(storage_adapter, "is_available") else False,
+        }
+        ready = all(checks.values())
+        return {"status": "ready" if ready else "not_ready", "checks": checks}, 200 if ready else 503
+
     @app.route("/health/full")
     @limiter.limit("10 per minute")
     def health_check_full():
@@ -639,13 +562,13 @@ def create_app():
         if "usuario_id" not in session:
             return jsonify({"error": "Acceso denegado"}), 403
 
-        stats = video_repository.obtener_estadisticas()
+        stats = video_repository.obtener_estadisticas() if video_repository else {}
 
-        # Estado GCP
-        gcp_status = {
-            "enabled": gcp_config.is_gcp_enabled(),
-            "cloud_storage": gcp_storage.is_available(),
-            "firestore": gcp_firestore.is_available(),
+        # Estado del stack local
+        local_status = {
+            "enabled": True,
+            "storage": storage_adapter.is_available() if storage_adapter and hasattr(storage_adapter, "is_available") else False,
+            "database": database_adapter.is_available() if database_adapter and hasattr(database_adapter, "is_available") else False,
         }
 
         # Extraer total de videos de la estructura correcta
@@ -653,12 +576,12 @@ def create_app():
 
         return {
             "status": "healthy",
-            "service": "TIVIT Video - Clean Architecture con GCP",
+            "service": "TIVIT Video - Clean Architecture (stack local)",
             "microservicios": ["auth", "socio", "admin"],
             "videos_almacenados": videos_total,
-            "usuarios_registrados": usuario_repository.contar_total(),
+            "usuarios_registrados": usuario_repository.contar_total() if usuario_repository else 0,
             "estadisticas": stats,
-            "gcp": gcp_status,
+            "local": local_status,
             "frontend": frontend_build_path.exists(),
         }, 200
 
@@ -744,40 +667,32 @@ def main():
 
     # Banner de inicio
     logger.info("\n" + "=" * 70)
-    logger.info("🎬 TIVIT Video - Clean Architecture con GCP")
+    logger.info("🎬 TIVIT Video - Clean Architecture (Stack Local)")
     logger.info("=" * 70)
     logger.info("📦 Arquitectura:")
     logger.info("   • Domain: Entidades puras sin dependencias")
     logger.info("   • Use Cases: Lógica de aplicación (ProcesarVideoUseCase)")
-    logger.info("   • Infrastructure: Flask, Repositorios, UI, Autenticación, GCP")
+    logger.info("   • Infrastructure: Flask, Repositorios, UI, Autenticación, Stack propio")
     logger.info("\n🔧 Microservicios:")
     logger.info("   • Auth: Sistema de login y registro")
     logger.info("   • Socio (Carga): Formulario de subida de videos")
     logger.info("   • Admin: Panel de administración y estadísticas")
 
-    # Obtener configuración GCP
-    gcp_config = app.extensions.get("gcp_config")
-    gcp_storage = app.extensions.get("gcp_storage")
-    gcp_firestore = app.extensions.get("gcp_firestore")
+    # Obtener configuración
+    app_config = app.extensions.get("app_config")
+    storage_adapter = app.extensions.get("storage_adapter")
+    database_adapter = app.extensions.get("db_adapter")
     video_repo = app.extensions.get("video_repository")
     user_repo = app.extensions.get("usuario_repository")
 
     logger.info("\n💾 Persistencia:")
-    if gcp_config and gcp_config.is_gcp_enabled():
-        logger.info("   • Google Cloud Platform: HABILITADO")
-        logger.info(f"   • Proyecto: {gcp_config.PROJECT_ID}")
-        logger.info(
-            f"   • Cloud Storage: {'✓' if gcp_storage.is_available() else '✗'} Bucket: {gcp_config.BUCKET_NAME}"
-        )
-        logger.info(
-            f"   • Firestore: {'✓' if gcp_firestore.is_available() else '✗'} Database"
-        )
-        logger.info(f"   • Repositorio Local: {video_repo.contar_total()} videos en memoria")
-    else:
-        logger.info("   • Repositorio en Memoria (Singleton compartido)")
-        logger.info(f"   • Videos almacenados: {video_repo.contar_total()}")
-
-    logger.info(f"   • Usuarios registrados: {user_repo.contar_total()}")
+    logger.info("   • Stack Local: SIN servicios GCP")
+    logger.info(f"   • Storage: {'✓' if storage_adapter and storage_adapter.is_available() else '✗'}")
+    logger.info(
+        f"   • Base de Datos: {'✓' if database_adapter and database_adapter.is_available() else '✗'}"
+    )
+    logger.info(f"   • Videos almacenados: {video_repo.contar_total() if video_repo else 0}")
+    logger.info(f"   • Usuarios registrados: {user_repo.contar_total() if user_repo else 0}")
     logger.info("\n📁 Configuración:")
     logger.info(f"   • Directorio uploads: {app.config['UPLOAD_FOLDER']}")
     logger.info(f"   • Archivo blacklist: {app.config['BLACKLIST_PATH']}")

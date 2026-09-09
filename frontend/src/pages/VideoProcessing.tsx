@@ -20,14 +20,14 @@ const PHASES: Phase[] = [
         title: 'Carga y Preparación',
         description: 'Estamos subiendo y preparando tu video.',
         steps: [1, 2],
-        stepLabels: ['Carga a Cloud Storage', 'Verificación de duración']
+        stepLabels: ['Carga a almacenamiento local', 'Verificación de duración']
     },
     {
         id: 2,
         title: 'Análisis del Contenido',
         description: 'Analizamos lo que aparece y se escucha en el video.',
         steps: [3, 4, 5],
-        stepLabels: ['Video Intelligence API', 'Gemini Vision', 'Speech-to-Text']
+        stepLabels: ['Análisis de video local', 'IA de visión local', 'Transcripción local']
     },
     {
         id: 3,

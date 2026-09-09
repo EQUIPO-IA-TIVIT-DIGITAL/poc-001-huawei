@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 import { apiRequest } from '../lib/api';
+import { getApiBaseUrl } from '../lib/backendUrl';
 import {
     Loader2, AlertCircle, Video, Type, Tag, CheckCircle2, XCircle, Clock,
     RotateCcw, Info, Timer, Hash, MessageSquare, Film, Sparkles, FileText,
@@ -72,7 +73,7 @@ interface VideoDetails {
         titulo?: string;
         nombre_archivo?: string;
         duracion_segundos?: number;
-        gcs_uri?: string;
+        storage_uri?: string;
         video_url?: string;
         thumbnail_generado?: boolean;
         fecha_subida?: string;
@@ -195,7 +196,7 @@ export function VideoDetailsModal({ videoId, open, onOpenChange }: VideoDetailsM
     const geminiVision = metadatos.gemini_vision || {};
     const speechAnalysis = metadatos.speech_analysis || {};
     const _rawVideoUrl = metadatos.video_url || details?.video_url;
-    const _apiBase = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001').replace(/\/$/, '');
+    const _apiBase = getApiBaseUrl();
     const videoUrl = _rawVideoUrl
         ? (_rawVideoUrl.startsWith('/') ? `${_apiBase}${_rawVideoUrl}` : _rawVideoUrl)
         : null;

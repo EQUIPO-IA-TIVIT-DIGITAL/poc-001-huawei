@@ -31,7 +31,7 @@ export interface OperationalAnalysis {
   nombre_camara: string;
   ubicacion: string;
   video_filename: string;
-  video_gcs_url: string;
+  video_url: string;
   video_duration: number;
   video_size_mb: number;
   estado: string;
@@ -79,8 +79,8 @@ export interface InitOperationalUploadResponse {
   success: boolean;
   analysis_id: string;
   upload_url: string;
-  gcs_path: string;
-  bucket: string;
+  storage_path: string;
+  storage_bucket: string;
   blob_name: string;
   expiration_hours: number;
   error?: string;
@@ -410,7 +410,7 @@ class OperationalVideoService {
 
   /**
    * Obtiene una URL firmada temporal para reproducir el video en el navegador
-   * @deprecated Usar getVideoStreamUrl que evita problemas de CORS con GCS
+   * @deprecated Usar getVideoStreamUrl que evita problemas de CORS con el almacenamiento directo
    */
   async obtenerVideoUrl(analysisId: string): Promise<string> {
     try {

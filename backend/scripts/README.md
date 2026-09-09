@@ -1,32 +1,33 @@
 # Utility Scripts
 
-This directory contains utility scripts, debugging tools, and migrations that should not be executed in production.
+This directory contains supported local utility scripts.
 
 ## Files
 
-### tmp_query.py
-Temporary script for ad-hoc Firestore queries. Useful for debugging and data analysis.
+### enqueue_video.py
+Queues a local video-processing job through Redis + RQ.
 
 **Usage:**
 ```bash
-python scripts/tmp_query.py
+python scripts/enqueue_video.py
 ```
 
-**Note:** Requires Firebase credentials to be configured directly in the script.
+### seed_demo_user.py
+Creates or updates the local SQLite demo account.
 
-### refactor_gcp.py
-Migration script used to refactor GCP credential configuration in adapters.
-
-**Usage:**
 ```bash
-python scripts/refactor_gcp.py
+export DEMO_USER_PASSWORD='replace-with-local-demo-password'
+python scripts/seed_demo_user.py
 ```
 
-**Note:** Already executed. Kept for historical reference only.
+Credentials: username `demo`; password from `DEMO_USER_PASSWORD`.
+
+### test_rtsp_stream.py
+Validates an RTSP stream locally before it is integrated into a video workflow.
 
 ## Warning
 
-**These scripts MUST NOT be included in production deployment.** They are development and debugging tools only.
+These scripts are development utilities and must not be included in production images.
 
 ## Adding New Scripts
 

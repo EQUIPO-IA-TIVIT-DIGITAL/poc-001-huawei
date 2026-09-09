@@ -312,6 +312,29 @@ def enqueue_video_analysis(video_id: str) -> Optional[str]:
         return None
 
 
+def enqueue_contextual_security_analysis(
+    analysis_id: str, video_id: str, contexto: str, modo: str
+) -> Optional[str]:
+    """Encola un análisis de seguridad que conserva su contexto y registro."""
+    try:
+        queue = get_video_queue()
+        job = queue.enqueue(
+            "worker.process_contextual_security_analysis",
+            analysis_id,
+            video_id,
+            contexto,
+            modo,
+            job_timeout="6h",
+            result_ttl=86400,
+            failure_ttl=86400,
+        )
+        logger.info("📋 Análisis contextual %s encolado - Job ID: %s", analysis_id, job.id)
+        return job.id
+    except Exception as e:
+        logger.error("❌ Error encolando análisis contextual %s: %s", analysis_id, e)
+        return None
+
+
 def enqueue_operational_analysis(analysis_id: str) -> Optional[str]:
     """
     Encola un análisis operativo para procesamiento asíncrono.

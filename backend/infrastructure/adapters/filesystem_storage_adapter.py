@@ -70,8 +70,8 @@ class FilesystemStorageAdapter:
         stem = Path(blob_name).stem
         return f"/socio/media/{stem}"
 
-    def generate_signed_url_from_gcs_uri(self, gcs_uri: str, expiration_minutes=60) -> Optional[str]:
-        return self.generate_signed_url(gcs_uri, expiration_minutes)
+    def generate_signed_url_from_storage_uri(self, storage_uri: str, expiration_minutes=60) -> Optional[str]:
+        return self.generate_signed_url(storage_uri, expiration_minutes)
 
     def delete_video(self, video_id: str, extension="mp4") -> bool:
         return self.delete_file(f"videos/{video_id}.{extension}")
@@ -97,8 +97,8 @@ class FilesystemStorageAdapter:
     def get_storage_stats(self) -> dict:
         vids = list((self.base_dir / "videos").glob("*"))
         return {"bucket": str(self.base_dir), "count": len(vids), "size_bytes": sum(p.stat().st_size for p in vids)}
-    def get_gcs_uri(self, gcs_path: str) -> str:
-        return f"file://{self.base_dir / gcs_path}"
+    def get_storage_uri(self, storage_path: str) -> str:
+        return f"file://{self.base_dir / storage_path}"
     def download_video(self, video_id: str, destination_path: str, extension="mp4") -> Optional[str]:
         src = self.base_dir / "videos" / f"{video_id}.{extension}"
         try:
@@ -106,5 +106,5 @@ class FilesystemStorageAdapter:
             return destination_path
         except Exception:
             return None
-    def get_signed_url(self, gcs_path: str, expiration_minutes=60) -> Optional[str]:
-        return self.generate_signed_url(gcs_path, expiration_minutes)
+    def get_signed_url(self, storage_path: str, expiration_minutes=60) -> Optional[str]:
+        return self.generate_signed_url(storage_path, expiration_minutes)

@@ -1,7 +1,7 @@
 """
 Servicio de Analytics y Reportes - AccessFan
 Genera estadísticas y reportes de uso del sistema
-OPTIMIZADO: Usa caché Redis para reducir carga en Firestore
+OPTIMIZADO: Usa caché Redis para reducir carga en la base de datos
 """
 
 from dataclasses import dataclass, field

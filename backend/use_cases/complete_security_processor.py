@@ -13,8 +13,6 @@ from typing import Optional, Dict, List, Any
 from domain.entities import SecurityVideo, EventoSeguridad, EstadoSecurityVideo
 from infrastructure.repositories.security_video_repository import SecurityVideoRepository
 from infrastructure.services.optimized_video_processor import OptimizedVideoProcessor
-from config.gcp_config import GCPConfig
-
 # Módulos especializados
 from use_cases.security.downloader import SecurityVideoDownloader
 from use_cases.security.scanner import SecurityVideoScanner
@@ -47,11 +45,17 @@ class CompleteSecurityVideoProcessor:
 
     def _init_lazy_dependencies(self):
         if self.gemini_adapter is None:
-            from infrastructure.adapters.gemini_adapter import GeminiAdapter
-            self.gemini_adapter = GeminiAdapter()
+            from infrastructure.adapters.ai_gateway import get_ai_gateway
+            self.gemini_adapter = get_ai_gateway()
         if self.storage_adapter is None:
-            from infrastructure.adapters.gcp_storage import CloudStorageAdapter
-            self.storage_adapter = CloudStorageAdapter(GCPConfig())
+            from config.app_config import AppConfig
+            backend = getattr(AppConfig, "STORAGE_BACKEND", "filesystem")
+            if backend == "minio":
+                from infrastructure.adapters.minio_storage_adapter import MinioStorageAdapter
+                self.storage_adapter = MinioStorageAdapter(AppConfig)
+            else:
+                from infrastructure.adapters.filesystem_storage_adapter import FilesystemStorageAdapter
+                self.storage_adapter = FilesystemStorageAdapter()
         
         if self.analyzer is None:
             self.analyzer = SecurityVideoGeminiAnalyzer(
@@ -136,7 +140,7 @@ class CompleteSecurityVideoProcessor:
             
             # FASE 1: Descarga
             self._update_progress(video, "Descargando video...", 5, fase='descarga')
-            local_video_path = self.downloader.download_or_get_cached(video_id, video.ruta_gcs)
+            local_video_path = self.downloader.download_or_get_cached(video_id, video.storage_path)
             logger.info(f"[{vid}] 📥 Video cacheado/descargado en {local_video_path}")
             
             try:

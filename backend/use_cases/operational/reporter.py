@@ -1,10 +1,9 @@
 import io
 import os
+import tempfile
 import logging
-import urllib.request
 from datetime import datetime
 from typing import List, Dict, Optional
-from urllib.parse import urlparse
 
 from domain.entities import OperationalAnalysis, OperationalEvent, OPERATIONAL_ANALYSIS_TYPES
 
@@ -18,27 +17,6 @@ _LIGHT = '#E8EAF6'
 _GREY  = '#757575'
 _WHITE = '#FFFFFF'
 
-# Dominios permitidos para descargas de imágenes (previene SSRF)
-_ALLOWED_IMAGE_HOSTS = frozenset({
-    "storage.googleapis.com",
-    "storage.cloud.google.com",
-})
-
-
-def _is_safe_image_url(url: str) -> bool:
-    """Valida que la URL solo apunte a dominios de GCS permitidos sobre HTTPS."""
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme != "https":
-            return False
-        host = parsed.netloc.lower().split(":")[0]
-        return host in _ALLOWED_IMAGE_HOSTS or any(
-            host.endswith(f".{h}") for h in _ALLOWED_IMAGE_HOSTS
-        )
-    except Exception:
-        return False
-
-
 def _fmt_time(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -48,15 +26,36 @@ def _fmt_time(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def _download_image(url: str, timeout: int = 8) -> Optional[bytes]:
-    """Download an image from a GCS URL; return raw bytes or None on failure."""
-    if not _is_safe_image_url(url):
-        logger.warning("_download_image: URL rechazada por validación SSRF: %.80s", url)
-        return None
+def _download_image(storage_adapter, url: str) -> Optional[bytes]:
+    """Descarga bytes de un frame desde el almacenamiento local (s3://, file://, ruta)."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TIVIT-Reporter/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
+        # file:// o ruta local
+        if url.startswith("file://") or os.path.exists(url):
+            path = url.replace("file://", "", 1)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return f.read()
+            return None
+
+        blob_name = url
+        if "://" in url:
+            parts = url.split("://", 1)[1]
+            blob_name = parts.split("/", 1)[1] if "/" in parts else parts
+
+        if not storage_adapter or not storage_adapter.is_available():
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            if not storage_adapter.descargar_archivo(blob_name, tmp_path):
+                return None
+            with open(tmp_path, "rb") as f:
+                return f.read()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     except Exception:
         return None
 
@@ -78,15 +77,15 @@ class OperationalReporter:
             pdf_path = self._generate_pdf_report(analysis, events, summary, vid)
             if pdf_path and os.path.exists(pdf_path):
                 if self.storage_adapter and self.storage_adapter.is_available():
-                    gcs_dest = f"operational/{analysis.id}/report.pdf"
+                    storage_destination = f"operational/{analysis.id}/report.pdf"
                     url = self.storage_adapter.upload_file(
-                        pdf_path, gcs_dest,
+                        pdf_path, storage_destination,
                         content_type='application/pdf',
                         return_signed_url=True,
                     )
                     if url:
                         urls['pdf'] = url
-                        logger.info(f"[{vid}]    📄 Reporte PDF subido a GCS")
+                        logger.info(f"[{vid}]    📄 Reporte PDF subido al almacenamiento")
                 try:
                     os.remove(pdf_path)
                 except OSError:
@@ -313,7 +312,7 @@ class OperationalReporter:
                 # Download up to 3 frames
                 img_elems = []
                 for url in ev.frame_urls[:3]:
-                    raw = _download_image(url)
+                    raw = _download_image(self.storage_adapter, url)
                     if raw:
                         try:
                             img_buf = io.BytesIO(raw)

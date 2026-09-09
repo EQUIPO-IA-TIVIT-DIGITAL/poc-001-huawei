@@ -1,5 +1,3 @@
-import base64
-import json
 import logging
 from typing import Optional, Dict, Any
 
@@ -44,45 +42,13 @@ class VideoQuickScanner:
                 '{"violacion_obvia": true/false, "razon": "breve explicación", "confianza": 0.0-1.0}'
             )
 
-            if hasattr(self.gemini, 'client') and self.gemini.client is not None:
-                from google.genai import types as _genai_types
-                parts = [quick_prompt]
-                for frame_b64 in frames:
-                    parts.append(_genai_types.Part.from_bytes(
-                        data=base64.b64decode(frame_b64),
-                        mime_type='image/jpeg',
-                    ))
-
-                from google.genai import types as _types
-                response = self.gemini._retry_with_backoff(
-                    self.gemini.client.models.generate_content,
-                    model=self.gemini._model_name,
-                    contents=parts,
-                    config=_types.GenerateContentConfig(
-                        max_output_tokens=200,
-                        response_mime_type="application/json",
-                        # thinking_config removido
-                    ),
-                )
-
-                content = response.text
-                if not content:
-                    return {"rechazar": False}
-                content = content.strip()
-                if content.startswith("```"):
-                    import re
-                    match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
-                    if match:
-                        content = match.group(1).strip()
-
-                result = json.loads(content)
-
-                if result.get("violacion_obvia") and result.get("confianza", 0) >= 0.95:
-                    return {
-                        "rechazar": True,
-                        "razon": result.get("razon", "Violación de contenido detectada"),
-                        "confianza": result.get("confianza", 0.95)
-                    }
+            result = self.gemini.vision(quick_prompt, images_b64=frames, json_mode=True)
+            if result.get("violacion_obvia") and result.get("confianza", 0) >= 0.95:
+                return {
+                    "rechazar": True,
+                    "razon": result.get("razon", "Violación de contenido detectada"),
+                    "confianza": result.get("confianza", 0.95)
+                }
 
             return {
                 "rechazar": False

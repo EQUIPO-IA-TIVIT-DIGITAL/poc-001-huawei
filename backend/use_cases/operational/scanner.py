@@ -40,7 +40,7 @@ class OperationalScanner:
             } if detected_events else {}
         }
         
-        logger.info(f"[{vid}] ✅ {len(motion_segments)} segmentos para análisis Gemini")
+        logger.info(f"[{vid}] ✅ {len(motion_segments)} segmentos para análisis IA")
 
         # Crear mapa de eventos para prompts
         detected_events_map = {}

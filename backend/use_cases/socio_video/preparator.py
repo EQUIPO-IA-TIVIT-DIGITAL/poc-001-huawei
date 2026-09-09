@@ -11,12 +11,12 @@ from infrastructure.services.thumbnail_service import ThumbnailService
 logger = logging.getLogger(__name__)
 
 class VideoPreparator:
-    """Paso 1: Compresión + Upload a GCS + Thumbnail (paralelo)"""
+    """Paso 1: Compresión + Upload a almacenamiento + Thumbnail (paralelo)"""
 
-    def __init__(self, compressor, storage, gcp_enabled: bool):
+    def __init__(self, compressor, storage, adapters_available: bool):
         self.compressor = compressor
         self.storage = storage
-        self.gcp_enabled = gcp_enabled
+        self.adapters_available = adapters_available
 
     def _generar_thumbnail_safe(self, video: Video):
         try:
@@ -32,7 +32,7 @@ class VideoPreparator:
         return datetime.now(timezone.utc).isoformat()
 
     def process_preparation(
-        self, video: Video, archivo_analisis: str, contexto_analisis: Dict[str, Any], upload_to_gcs: bool
+        self, video: Video, archivo_analisis: str, contexto_analisis: Dict[str, Any], upload_to_storage: bool
     ) -> Dict[str, Any]:
         """
         Devuelve dict con result_data.
@@ -40,7 +40,7 @@ class VideoPreparator:
         """
         logger.info(f"📦 [PASO 1] Preparación: archivo={video.ruta_archivo}, formato={video.formato}")
         
-        gcs_uri = None
+        storage_uri = None
         compression_stats = None
         compressed_path = None
         current_archivo_analisis = archivo_analisis
@@ -68,9 +68,9 @@ class VideoPreparator:
                 except Exception as e:
                     logger.warning(f"Compresión fallida, usando original: {e}")
 
-            # Tarea 3: Upload a GCS
-            if self.gcp_enabled and upload_to_gcs and self.storage and self.storage.is_available():
-                gcs_uri = self.storage.upload_video(
+            # Tarea 3: Upload a almacenamiento
+            if self.adapters_available and upload_to_storage and self.storage and self.storage.is_available():
+                storage_uri = self.storage.upload_video(
                     file_path=current_archivo_analisis,
                     video_id=video.id,
                     content_type=f"video/{video.formato}",
@@ -82,8 +82,8 @@ class VideoPreparator:
                     },
                 )
 
-                if gcs_uri:
-                    video.agregar_metadatos("gcs_uri", gcs_uri)
+                if storage_uri:
+                    video.agregar_metadatos("storage_uri", storage_uri)
                     blob_name = f"videos/{video.id}.{video.formato}"
                     signed_url = self.storage.generate_signed_url(blob_name, expiration_minutes=1440)
                     if signed_url:
@@ -92,7 +92,7 @@ class VideoPreparator:
                 else:
                     return {
                         "error": True,
-                        "msg": "Error crítico: No se pudo subir a Cloud Storage.",
+                        "msg": "Error crítico: No se pudo subir al almacenamiento.",
                         "compressed_path": compressed_path
                     }
 
@@ -108,7 +108,7 @@ class VideoPreparator:
 
         return {
             "error": False,
-            "gcs_uri": gcs_uri,
+            "storage_uri": storage_uri,
             "compressed_path": compressed_path,
             "archivo_analisis": current_archivo_analisis
         }

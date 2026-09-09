@@ -12,19 +12,14 @@ from functools import wraps
 from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
 from infrastructure.services.logging_service import get_logger
 from infrastructure.services.ai_cost_control import AIUsageTracker
-from infrastructure.adapters.gemini_adapter import GeminiAdapter
+from infrastructure.dependencies import get_ai_adapter
 from infrastructure.rate_limiter import limiter, AI_CHAT_LIMIT, API_LIMIT
 
 logger = get_logger(__name__)
 
-# Lazy init de Gemini Adapter (evitar conexión al importar)
-_gemini_adapter = None
-
-def _get_gemini_adapter():
-    global _gemini_adapter
-    if _gemini_adapter is None:
-        _gemini_adapter = GeminiAdapter()
-    return _gemini_adapter
+# Lazy init de IA (usar gateway local provisto por DI; evitar conexión al importar)
+def _get_ai_adapter():
+    return get_ai_adapter()
 
 def workspace_auth_required(f):
     """Decorator para required autenticación"""
@@ -147,8 +142,9 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
 """
 
         # Verificar si Gemini está disponible
-        if not _get_gemini_adapter().disponible:
-            logger.warning(f"🤖 Gemini no disponible para validación de workspace {workspace_id}")
+        ai_adapter = _get_ai_adapter()
+        if not ai_adapter.disponible:
+            logger.warning(f"🤖 IA no disponible para validación de workspace {workspace_id}")
             return jsonify({
                 'success': True,
                 'workspace_id': workspace_id,
@@ -156,7 +152,7 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
                     'suficiente': True,
                     'mensaje': '⚠️ Servicio de IA no configurado. La validación automática no está disponible. Puedes continuar sin ella, pero asegúrate de revisar manualmente que el contexto sea claro y específico.',
                     'sugerencias': [
-                        'Configura GEMINI_API_KEY para habilitar validación con IA',
+                        'Configura un proveedor de IA para habilitar la validación',
                         'Revisa que la descripción sea específica y detallada',
                         'Menciona claramente qué tipo de contenido se subirá'
                     ],
@@ -171,18 +167,13 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
                     f"contexto_len={len(workspace.contexto or '')}")
 
         try:
-            # Llamar a Gemini
-            response = _get_gemini_adapter().client.models.generate_content(
-                model=_get_gemini_adapter()._model_name,
-                contents=prompt,
-                config={
-                    "temperature": 0.3, 
-                    "max_output_tokens": 1500,
-                    "response_mime_type": "application/json"
-                },
-            )
-            
-            ai_response = response.text.strip()
+            # Llamar a la pasarela de IA local/API comercial.
+            ai_response = ai_adapter.chat(
+                [{"role": "user", "content": prompt}],
+                json_mode=True,
+                temperature=0.3,
+                max_tokens=1500,
+            ).strip()
             
             # Limpiar respuesta (quitar markdown si existe)
             if '```json' in ai_response:
@@ -210,7 +201,7 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
                 try:
                     validacion = json.loads(repaired)
                 except json.JSONDecodeError:
-                    logger.warning(f"JSON de Gemini irreparable, usando fallback crítico. Respuesta: {ai_response[:200]}")
+                    logger.warning(f"JSON de IA irreparable, usando fallback crítico. Respuesta: {ai_response[:200]}")
                     validacion = {
                         "suficiente": False,
                         "preguntas": [
@@ -222,7 +213,7 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
                     }
             
         except Exception as e:
-            logger.error(f"Error al consultar Gemini: {e}")
+            logger.error(f"Error al consultar IA: {e}")
             # Fallback: pedir más info en vez de aprobar ciegamente
             validacion = {
                 "suficiente": False,
@@ -243,6 +234,7 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
         input_tokens = len(prompt) // 4  # Aproximación: 1 token ≈ 4 caracteres
         output_tokens = len(str(validacion)) // 4
         
+        ai_model = ai_adapter.get_model_name("text") if hasattr(ai_adapter, "get_model_name") else "ai-gateway"
         AIUsageTracker.log_usage(
             usuario=usuario,
             endpoint='validate',
@@ -251,7 +243,7 @@ Responde SOLO con JSON válido, sin markdown ni explicaciones adicionales.
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             latency_ms=0,  # No medimos latencia aquí
-            model='gemini-2.0-flash',
+            model=ai_model,
             success=True,
             prompt=prompt
         )
@@ -344,7 +336,7 @@ Responde SOLO con el texto del contexto mejorado, sin explicaciones ni formato m
 """
 
         # Verificar si Gemini está disponible
-        if not _get_gemini_adapter().disponible:
+        if not _get_ai_adapter().disponible:
             contexto_mejorado = _build_fallback_context(workspace.contexto, respuestas)
             workspace.contexto = contexto_mejorado
             workspace.fecha_modificacion = datetime.now().isoformat()
@@ -360,14 +352,12 @@ Responde SOLO con el texto del contexto mejorado, sin explicaciones ni formato m
             }), 200
 
         try:
-            # Llamar a Gemini
-            response = _get_gemini_adapter().client.models.generate_content(
-                model=_get_gemini_adapter()._model_name,
-                contents=prompt,
-                config={"temperature": 0.5, "max_output_tokens": 1000},
-            )
-            
-            contexto_mejorado = response.text.strip()
+            # Llamar a la pasarela de IA local
+            contexto_mejorado = _get_ai_adapter().chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=1000,
+            ).strip()
             
             # Limpiar texto
             contexto_mejorado = contexto_mejorado.replace('```', '').strip()
@@ -457,10 +447,10 @@ No escribas el contexto completo por el usuario, solo hazle preguntas o sugerenc
 """
 
         # Verificar si Gemini está disponible
-        if not _get_gemini_adapter().disponible:
+        if not _get_ai_adapter().disponible:
             return jsonify({
                 'success': False,
-                'error': 'Chat de IA no disponible. Configura GEMINI_API_KEY para usar esta función.'
+                'error': 'Chat de IA no disponible. Configura un proveedor de IA para usar esta función.'
             }), 400
 
         try:
@@ -479,14 +469,12 @@ No escribas el contexto completo por el usuario, solo hazle preguntas o sugerenc
             # Agregar mensaje actual
             full_prompt += f"\nUsuario: {mensaje_usuario}\nAsistente:"
 
-            # Llamar a Gemini
-            response = _get_gemini_adapter().client.models.generate_content(
-                model=_get_gemini_adapter()._model_name,
-                contents=full_prompt,
-                config={"temperature": 0.7, "max_output_tokens": 500},
-            )
-            
-            respuesta_ia = response.text.strip()
+            # Llamar a la pasarela de IA local
+            respuesta_ia = _get_ai_adapter().chat(
+                [{"role": "user", "content": full_prompt}],
+                temperature=0.7,
+                max_tokens=500,
+            ).strip()
             
         except Exception as e:
             logger.error(f"Error en conversación con Gemini: {e}")

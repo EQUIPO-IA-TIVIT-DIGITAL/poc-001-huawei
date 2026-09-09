@@ -7,6 +7,7 @@ interface AuthContextType {
     login: (credentials: { username: string; password?: string }) => Promise<User | null>;
     logout: () => void;
     verifySession: () => Promise<void>;
+    updateUser: (updates: Partial<User>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -32,8 +33,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setUser(storedUser);
         }
         // Always verify with the backend on mount.
-        // This is critical for SSO flows (e.g. Microsoft OAuth) where the server
-        // sets the session cookie before the frontend has stored anything in localStorage.
         verifySession().finally(() => setIsLoading(false));
     }, [verifySession]);
 
@@ -50,8 +49,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
     }, []);
 
+    const updateUser = useCallback((updates: Partial<User>) => {
+        authService.updateLocalUser(updates);
+        setUser((currentUser) => (currentUser ? { ...currentUser, ...updates } : currentUser));
+    }, []);
+
     return (
-        <AuthContext.Provider value={{ user, isLoading, login, logout, verifySession }}>
+        <AuthContext.Provider value={{ user, isLoading, login, logout, verifySession, updateUser }}>
             {children}
         </AuthContext.Provider>
     );

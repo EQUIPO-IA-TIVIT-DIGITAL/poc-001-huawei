@@ -1,13 +1,12 @@
 # Backend solo (sin supervisord) — local offline 32B
-FROM python:3.11-slim
+FROM python:3.11.14-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg=7:5.1* libmagic1 curl tini && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1000 -s /bin/bash appuser
 WORKDIR /app
 COPY requirements.txt .
-# gunicorn pinneado — no latest
-RUN pip install --no-cache-dir gunicorn==23.0.0
+RUN pip install --no-cache-dir -r requirements.txt gunicorn==23.0.0
 COPY --chown=appuser:appuser . .
-RUN mkdir -p /app/uploads /app/thumbnails /app/logs && chown -R appuser:appuser /app
+RUN mkdir -p /app/uploads /app/thumbnails && chown -R appuser:appuser /app
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FLASK_APP=main.py PORT=5000
 EXPOSE 5000
 USER appuser

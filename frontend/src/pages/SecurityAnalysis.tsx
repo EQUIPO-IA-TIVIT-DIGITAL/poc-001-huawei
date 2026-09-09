@@ -238,7 +238,7 @@ export default function SecurityAnalysis() {
                             <Zap className={`w-5 h-5 ${modo === 'ESTANDAR' ? 'text-blue-500' : 'text-gray-400'}`} />
                             <div>
                                 <div className="font-medium text-gray-900 dark:text-white">Estándar</div>
-                                <div className="text-sm text-gray-500">Análisis rápido con Gemini AI</div>
+                                <div className="text-sm text-gray-500">Análisis rápido con IA de visión local</div>
                             </div>
                         </label>
 
@@ -257,7 +257,7 @@ export default function SecurityAnalysis() {
                             <Sparkles className={`w-5 h-5 ${modo === 'PROFUNDO' ? 'text-purple-500' : 'text-gray-400'}`} />
                             <div>
                                 <div className="font-medium text-gray-900 dark:text-white">Profundo</div>
-                                <div className="text-sm text-gray-500">+ Video Intelligence API</div>
+                                <div className="text-sm text-gray-500">+ Análisis de video local</div>
                             </div>
                         </label>
                     </div>

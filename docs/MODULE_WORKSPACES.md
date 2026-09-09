@@ -4,7 +4,7 @@
 
 Workspaces are the top-level organizational unit in TIVIT CU002. A workspace groups related videos together and stores a shared AI context that influences how uploaded videos are analyzed and moderated.
 
-Each workspace has its own configuration (name, description, category, content type, tolerance level), an AI context used to guide Gemini's moderation decisions, a video collection (up to 100 videos), and cached statistics.
+Each workspace has its own configuration (name, description, category, content type, tolerance level), an AI context used to guide the local AI moderation decisions, a video collection (up to 100 videos), and cached statistics.
 
 ---
 
@@ -12,7 +12,7 @@ Each workspace has its own configuration (name, description, category, content t
 
 ```
 Workspace
-  id                  string       Firestore document ID
+  id                  string       Primary key (SQLAlchemy)
   nombre              string       Display name (3-50 chars)
   descripcion         string       Optional longer description (max 200 chars)
   usuario             string       Owner username
@@ -29,7 +29,7 @@ Workspace
   eliminado_por       string       Username who deleted it (empty if active)
 ```
 
-Persisted in Firestore collection: `workspaces`
+Persisted in PostgreSQL/SQLAlchemy table: `workspaces`
 
 ---
 
@@ -63,11 +63,11 @@ All user-supplied text fields are processed by `infrastructure/validators/text_s
 
 ## Atomic Operations
 
-All write operations that must be consistent under concurrent access use Firestore transactions or batch writes via `infrastructure/services/workspace_transactions.py`.
+All write operations that must be consistent under concurrent access use SQLAlchemy database transactions or batch writes via `infrastructure/services/workspace_transactions.py`.
 
 | Function | Guarantee |
 |----------|-----------|
-| `crear_workspace_atomico()` | Reads current workspace count and writes the new document in a single transaction; prevents exceeding the 20-workspace limit under parallel requests; enforces case-insensitive name uniqueness; **soft-deleted workspaces are excluded from both the limit count and uniqueness check** |
+| `crear_workspace_atomico()` | Reads current workspace count and writes the new row in a single transaction; prevents exceeding the 20-workspace limit under parallel requests; enforces case-insensitive name uniqueness; **soft-deleted workspaces are excluded from both the limit count and uniqueness check** |
 | `actualizar_workspace_atomico()` | Reads the workspace inside the transaction before writing; validates ownership and name uniqueness atomically against active workspaces only |
 | `eliminar_workspace_con_batch()` | Moves all videos to the General workspace and marks the workspace as deleted in a single batch write; guarantees no orphaned video references |
 | `duplicar_workspace_atomico()` | Verifies limit and name uniqueness inside one transaction before creating the duplicate; **soft-deleted workspaces are excluded from both checks** |
@@ -80,7 +80,7 @@ This eliminates the race conditions that previously allowed duplicate workspace 
 
 Deleting a workspace is non-destructive by default. The workspace is flagged as deleted (`eliminado: true`) and moved to a trash state. Videos inside the workspace are not affected.
 
-Hard delete is available as an explicit opt-in (`?hard_delete=true`) and permanently removes the workspace document. Before hard deletion, all videos are reassigned to the General workspace to maintain referential integrity.
+Hard delete is available as an explicit opt-in (`?hard_delete=true`) and permanently removes the workspace row. Before hard deletion, all videos are reassigned to the General workspace to maintain referential integrity.
 
 ### State transitions
 
@@ -100,7 +100,7 @@ deleted --[hard delete]--> permanently removed
 
 ## Audit Log
 
-Every CRUD operation on workspaces is recorded in the `workspace_audit_logs` Firestore collection by `infrastructure/services/workspace_audit.py`. Each log entry contains:
+Every CRUD operation on workspaces is recorded in the `workspace_audit_logs` SQLAlchemy table by `infrastructure/services/workspace_audit.py`. Each log entry contains:
 
 ```
 timestamp       string    ISO 8601
@@ -120,7 +120,7 @@ Audit logs are append-only and are never deleted by application code.
 
 ## AI Cost Control
 
-Gemini API calls for workspace context validation are governed by `infrastructure/services/ai_cost_control.py`.
+Local AI gateway calls (vLLM/OpenAI-compatible) for workspace context validation are governed by `infrastructure/services/ai_cost_control.py`.
 
 | Limit | Value |
 |-------|-------|
@@ -129,7 +129,7 @@ Gemini API calls for workspace context validation are governed by `infrastructur
 | Max tokens per user per day | 100 000 |
 | Response cache TTL | 24 hours |
 
-Identical validation requests within the cache TTL return the cached Gemini response without consuming API quota. Usage is tracked per user in the `ai_usage_logs` and `ai_daily_limits` Firestore collections.
+Identical validation requests within the cache TTL return the cached AI response without consuming quota. Usage is tracked per user in the `ai_usage_logs` and `ai_daily_limits` SQLAlchemy tables.
 
 ---
 
@@ -141,7 +141,7 @@ Workspace stats are cached and recalculated via `recalculate_workspace_stats()` 
 
 ## AI Context Validation
 
-The `POST /workspaces/:id/chat/validate` endpoint allows users to verify whether their workspace configuration is sufficiently specific for the AI moderation pipeline. Gemini evaluates the current workspace settings and returns either a validation summary or a set of clarifying questions.
+The `POST /workspaces/:id/chat/validate` endpoint allows users to verify whether their workspace configuration is sufficiently specific for the AI moderation pipeline. The local AI evaluates the current workspace settings and returns either a validation summary or a set of clarifying questions.
 
 ---
 

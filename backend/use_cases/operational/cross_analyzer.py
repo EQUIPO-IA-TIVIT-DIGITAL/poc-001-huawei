@@ -18,7 +18,7 @@ class OperationalCrossAnalyzer:
         
     def cross_analyze(self, segment_results: list, analysis: OperationalAnalysis, video_duration: float, vid: str) -> dict:
         if not self.gemini_adapter or not self.gemini_adapter.disponible:
-            logger.warning(f"[{vid}] ⚠️ Gemini no disponible para cross-analysis")
+            logger.warning(f"[{vid}] ⚠️ IA local no disponible para cross-analysis")
             return {}
 
         if not segment_results:

@@ -1,9 +1,7 @@
 """
 AppConfig — Configuración unificada Local Offline (32B)
-Reemplaza config/gcp_config.py (GCPConfig) con feature flags.
 
 Prioridad: ENV (.env) > defaults. Carga .env al importar.
-Mantiene compatibilidad con GCPConfig legacy via alias + shim.
 """
 import os
 from typing import Optional
@@ -20,15 +18,15 @@ class AppConfig:
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")
 
     # ---- Feature flags (local-first) ----
-    # storage: minio | filesystem | gcs_legacy
+    # storage: minio | filesystem
     STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "filesystem" if os.getenv("S3_ENDPOINT") is None and os.getenv("STORAGE_BACKEND") is None else os.getenv("STORAGE_BACKEND", "minio")).lower()
     # Normalizar: si no hay S3_ENDPOINT y no se pidió minio, usar filesystem
-    if STORAGE_BACKEND not in ("minio", "filesystem", "gcs_legacy"):
+    if STORAGE_BACKEND not in ("minio", "filesystem"):
         STORAGE_BACKEND = "filesystem"
 
-    # db: postgres | sqlite | firestore_legacy
+    # db: postgres | sqlite
     DB_BACKEND: str = os.getenv("DB_BACKEND", "postgres" if os.getenv("DATABASE_URL") else "sqlite").lower()
-    if DB_BACKEND not in ("postgres", "sqlite", "firestore_legacy"):
+    if DB_BACKEND not in ("postgres", "sqlite"):
         DB_BACKEND = "postgres"
 
     # ai: hybrid | local | api | disabled
@@ -42,7 +40,7 @@ class AppConfig:
 
     # ---- S3 / MinIO ----
     S3_ENDPOINT: Optional[str] = os.getenv("S3_ENDPOINT")
-    S3_BUCKET: str = os.getenv("S3_BUCKET", os.getenv("GCP_BUCKET_NAME", "cu002-videos"))
+    S3_BUCKET: str = os.getenv("S3_BUCKET", "cu002-videos")
     S3_ACCESS_KEY: Optional[str] = os.getenv("S3_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER")
     S3_SECRET_KEY: Optional[str] = os.getenv("S3_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD")
     S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
@@ -52,10 +50,17 @@ class AppConfig:
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
     REDIS_PASSWORD: Optional[str] = os.getenv("REDIS_PASSWORD")
 
-    # ---- IA 32B ----
+    # ---- IA 32B / OpenAI-compatible APIs ----
+    AI_API_PROVIDER: str = os.getenv("AI_API_PROVIDER", "openrouter").lower()
     AI_API_BASE_URL: Optional[str] = os.getenv("AI_API_BASE_URL")
     AI_API_KEY: Optional[str] = os.getenv("AI_API_KEY")
     AI_API_MODEL: str = os.getenv("AI_API_MODEL", "qwen2.5-vl-32b")
+    AI_API_TEXT_MODEL: str = os.getenv("AI_API_TEXT_MODEL", AI_API_MODEL)
+    AI_API_VISION_MODEL: str = os.getenv("AI_API_VISION_MODEL", AI_API_MODEL)
+    AI_API_EMBEDDING_MODEL: Optional[str] = os.getenv("AI_API_EMBEDDING_MODEL")
+
+    OPENROUTER_SITE_URL: str = os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173")
+    OPENROUTER_APP_NAME: str = os.getenv("OPENROUTER_APP_NAME", "TIVIT CU002")
 
     AI_LOCAL_BASE_URL: str = os.getenv("AI_LOCAL_BASE_URL", "http://vllm-vision:8000/v1")
     AI_LOCAL_MODEL: str = os.getenv("AI_LOCAL_MODEL", "Qwen/Qwen2.5-VL-32B-Instruct-AWQ")
@@ -70,23 +75,10 @@ class AppConfig:
     VLLM_GPU_MEMORY_UTILIZATION: float = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.92"))
     VLLM_MAX_MODEL_LEN: int = int(os.getenv("VLLM_MAX_MODEL_LEN", "8192"))
 
-    # ---- GCP legacy (solo para compat) ----
-    GCP_PROJECT_ID: str = os.getenv("GCP_PROJECT_ID", "cu002-local")
-    GCP_REGION: str = os.getenv("GCP_REGION", "us-central1")
-    GCP_BUCKET_NAME: str = os.getenv("GCP_BUCKET_NAME", S3_BUCKET)
     SIGNED_URL_EXPIRATION_MINUTES: int = int(os.getenv("SIGNED_URL_EXPIRATION_MINUTES", "60"))
 
-    # Lifecycle
-    LIFECYCLE_NEARLINE_DAYS: int = int(os.getenv("GCP_LIFECYCLE_NEARLINE_DAYS", "30"))
-    LIFECYCLE_COLDLINE_DAYS: int = int(os.getenv("GCP_LIFECYCLE_COLDLINE_DAYS", "90"))
-    LIFECYCLE_DELETE_TEMP_DAYS: int = int(os.getenv("GCP_LIFECYCLE_DELETE_TEMP_DAYS", "7"))
-
-    # Firestore collections (legacy alias)
-    FIRESTORE_COLLECTION_VIDEOS: str = "videos"
-    FIRESTORE_COLLECTION_USERS: str = "users"
-    FIRESTORE_COLLECTION_LOGS: str = "logs"
-    BUCKET_VIDEOS_FOLDER: str = "videos/"
-    BUCKET_THUMBNAILS_FOLDER: str = "thumbnails/"
+    STORAGE_VIDEOS_FOLDER: str = "videos/"
+    STORAGE_THUMBNAILS_FOLDER: str = "thumbnails/"
 
     @classmethod
     def validate_config(cls) -> tuple[bool, list[str]]:
@@ -95,19 +87,18 @@ class AppConfig:
             errors.append("SECRET_KEY requerido en producción")
         if cls.STORAGE_BACKEND == "minio" and not cls.S3_ENDPOINT:
             errors.append("S3_ENDPOINT requerido con STORAGE_BACKEND=minio")
+        if cls.STORAGE_BACKEND == "minio" and not cls.S3_ACCESS_KEY:
+            errors.append("S3_ACCESS_KEY o MINIO_ROOT_USER requerido con STORAGE_BACKEND=minio")
+        if cls.STORAGE_BACKEND == "minio" and not cls.S3_SECRET_KEY:
+            errors.append("S3_SECRET_KEY o MINIO_ROOT_PASSWORD requerido con STORAGE_BACKEND=minio")
+        if cls.AI_PROVIDER == "api" and not cls.AI_API_BASE_URL:
+            errors.append("AI_API_BASE_URL requerido con AI_PROVIDER=api")
+        if cls.AI_PROVIDER == "api" and not cls.AI_API_KEY:
+            errors.append("AI_API_KEY requerido con AI_PROVIDER=api")
         if cls.DB_BACKEND == "postgres" and not cls.DATABASE_URL.startswith("postgresql"):
             # sqlite es fallback válido
             pass
         return len(errors) == 0, errors
-
-    @classmethod
-    def is_gcp_enabled(cls) -> bool:
-        """Shim compat: true si DB/storage legacy GCP."""
-        return cls.STORAGE_BACKEND == "gcs_legacy" or cls.DB_BACKEND == "firestore_legacy"
-
-    @classmethod
-    def is_local_enabled(cls) -> bool:
-        return not cls.is_gcp_enabled()
 
     @classmethod
     def get_bucket_url(cls, filename: str, folder: str | None = None) -> str:
@@ -117,7 +108,7 @@ class AppConfig:
 
     @classmethod
     def get_video_path(cls, video_id: str, extension: str = "mp4") -> str:
-        return f"{cls.BUCKET_VIDEOS_FOLDER}{video_id}.{extension}"
+        return f"{cls.STORAGE_VIDEOS_FOLDER}{video_id}.{extension}"
 
     @classmethod
     def get_config_summary(cls) -> dict:
@@ -135,11 +126,10 @@ class AppConfig:
             "s3_bucket": cls.S3_BUCKET,
             "ai_local_base_url": cls.AI_LOCAL_BASE_URL,
             "ai_local_model": cls.AI_LOCAL_MODEL,
+            "ai_api_provider": cls.AI_API_PROVIDER,
             "ai_api_base_url": cls.AI_API_BASE_URL,
-            "project_id": cls.GCP_PROJECT_ID,
-            "region": cls.GCP_REGION,
+            "ai_api_text_model": cls.AI_API_TEXT_MODEL,
+            "ai_api_vision_model": cls.AI_API_VISION_MODEL,
         }
 
-# Alias legacy: GCPConfig -> AppConfig para no romper imports existentes
-GCPConfig = AppConfig
 config = AppConfig()

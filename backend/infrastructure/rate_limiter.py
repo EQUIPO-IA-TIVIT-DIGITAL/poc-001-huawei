@@ -67,7 +67,8 @@ def _get_limiter_storage_uri():
     return _REDIS_URL_CACHE
 
 
-# Limiter global que será inicializado en main.py — storage_uri lazy
+# Limiter global que será inicializado en main.py.
+# Flask-Limiter espera un string en storage_uri; no acepta callables aquí.
 limiter = Limiter(
     key_func=get_rate_limit_key,
     default_limits=[
@@ -75,7 +76,7 @@ limiter = Limiter(
         os.environ.get("RATE_LIMIT_DEFAULT_HOUR", "1000 per hour"),
         os.environ.get("RATE_LIMIT_DEFAULT_MINUTE", "100 per minute"),
     ],
-    storage_uri=_get_limiter_storage_uri,
+    storage_uri=_get_limiter_storage_uri(),
     strategy="fixed-window",
 )
 
@@ -93,8 +94,8 @@ API_LIMIT = os.environ.get("API_LIMIT", "60 per minute")
 ADMIN_API_LIMIT = os.environ.get("ADMIN_API_LIMIT", "100 per minute")
 ADMIN_ACTION_LIMIT = os.environ.get("ADMIN_ACTION_LIMIT", "30 per minute")
 
-# Límite específico para endpoints que llaman a Gemini (chat IA)
-# Más restrictivo que API_LIMIT porque cada request genera tokens Gemini
+# Límite específico para endpoints que llaman a la IA local (chat IA)
+# Más restrictivo que API_LIMIT porque cada request genera tokens de IA
 # 15/min por IP = suficiente para uso legítimo, protege contra abuso de cuota
 AI_CHAT_LIMIT = os.environ.get("AI_CHAT_LIMIT", "15 per minute")
 

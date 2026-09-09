@@ -15,22 +15,21 @@ class OperationalDownloader:
     def download_and_get_metadata(self, analysis, vid: str, local_video_path: str = "") -> dict:
         """Descarga el video (si es necesario) y extrae metadata"""
         if not local_video_path or not os.path.exists(local_video_path):
-            if analysis.video_gcs_url:
-                logger.info(f"[{vid}] 📥 Descargando video desde GCS: {analysis.video_gcs_url}")
-                # Descargar en OPERATIONAL_TMP_DIR si está configurado (útil en Cloud Run
-                # donde /tmp tiene 512 MB de límite; montar un volumen y apuntar la env var).
+            if analysis.video_url:
+                logger.info(f"[{vid}] 📥 Descargando video desde almacenamiento: {analysis.video_url}")
+                # Descargar en OPERATIONAL_TMP_DIR si está configurado.
                 base_tmp = os.environ.get("OPERATIONAL_TMP_DIR") or tempfile.gettempdir()
                 os.makedirs(base_tmp, exist_ok=True)
-                suffix = Path(analysis.video_gcs_url).suffix or ".mp4"
+                suffix = Path(analysis.video_url).suffix or ".mp4"
                 dest = tempfile.NamedTemporaryFile(
                     delete=False, suffix=suffix, prefix="op_video_", dir=base_tmp
                 )
                 dest.close()
-                local_video_path = self.optimized_processor.download_from_gcs(
-                    analysis.video_gcs_url, local_path=dest.name
+                local_video_path = self.optimized_processor.download_from_storage(
+                    analysis.video_url, local_path=dest.name
                 )
             else:
-                raise ValueError("No hay video_path local ni video_gcs_url para descargar")
+                raise ValueError("No hay video_path local ni video_url para descargar")
 
         video_metadata = self._get_video_metadata(local_video_path, vid)
         video_duration = video_metadata.get('duration_seconds', 0) if video_metadata else 0

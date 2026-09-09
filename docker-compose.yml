@@ -2,9 +2,9 @@ services:
   tivit-vision-backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.backend
     container_name: tivit-vision-backend-orig
-    image: tivit-vision-backend-orig:latest
+    image: tivit-vision-backend-orig:1.0.0
     ports:
       - "5002:5000"
     environment:
@@ -12,38 +12,18 @@ services:
       - REQUIRE_ASYNC_QUEUE=${REQUIRE_ASYNC_QUEUE:-true}
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
       - PYTHONUNBUFFERED=1
+      - STORAGE_BACKEND=filesystem
+      - DB_BACKEND=sqlite
+      - AI_PROVIDER=disabled
       # Redis Queue
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
-      # GCP Configuration (Usando identidades ADC del host)
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID:?GCP_PROJECT_ID is required}
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:?GCP_PROJECT_ID is required}
-      - GOOGLE_CLOUD_QUOTA_PROJECT=${GCP_PROJECT_ID}
-      - GCP_BUCKET_NAME=${GCP_BUCKET_NAME:-tivit-mira-prd-videos}
-      - GCP_REGION=${GCP_REGION:-us-central1}
-      - CLOUD_TASKS_QUEUE=${CLOUD_TASKS_QUEUE:-video-processing}
-      - CLOUD_TASKS_SERVICE_URL=${CLOUD_TASKS_SERVICE_URL:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      # Gemini via Vertex AI (Service Account o ADC)
-      - GOOGLE_GENAI_USE_VERTEXAI=True
-      - GOOGLE_CLOUD_LOCATION=us-central1
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
-      # ADC: apunta al archivo de credenciales dentro del contenedor
-      - GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json
-      # Azure AD / Entra ID
-      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
-      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
-      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
-      - AZURE_REDIRECT_URI=${AZURE_REDIRECT_URI:-http://localhost:5002/api/auth/microsoft/callback}
       - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:5002}
     volumes:
       - ./backend/config:/app/config:ro
       - uploads:/app/uploads
       - thumbnails:/app/thumbnails
       - ./backend:/app
-      # MONTAJE DE CREDENCIALES ADC DEL HOST
-      # Windows: definir GCLOUD_CONFIG_DIR=%APPDATA%\gcloud en el .env
-      # Linux/Mac: definir GCLOUD_CONFIG_DIR=~/.config/gcloud en el .env
-      - ${GCLOUD_CONFIG_DIR}:/home/appuser/.config/gcloud:ro
     networks:
       - tivit-vision-network
     restart: unless-stopped
@@ -92,8 +72,8 @@ services:
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile.dev
-    image: tivit-vision-backend-orig:latest
+      dockerfile: Dockerfile.worker
+    image: tivit-vision-worker-orig:1.0.0
     command: python worker.py
     depends_on:
       redis:
@@ -104,22 +84,13 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
       - REQUIRE_ASYNC_QUEUE=${REQUIRE_ASYNC_QUEUE:-true}
       - PYTHONUNBUFFERED=1
-      - GCP_PROJECT_ID=${GCP_PROJECT_ID:?GCP_PROJECT_ID is required}
-      - GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID:?GCP_PROJECT_ID is required}
-      - GOOGLE_CLOUD_QUOTA_PROJECT=${GCP_PROJECT_ID}
-      - GCP_BUCKET_NAME=${GCP_BUCKET_NAME:-tivit-mira-prd-videos}
-      - GCP_REGION=${GCP_REGION:-us-central1}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      # Gemini via Vertex AI (Service Account o ADC)
-      - GOOGLE_GENAI_USE_VERTEXAI=True
-      - GOOGLE_CLOUD_LOCATION=us-central1
-      # ADC: apunta al archivo de credenciales dentro del contenedor
-      - GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json
+      - STORAGE_BACKEND=filesystem
+      - DB_BACKEND=sqlite
+      - AI_PROVIDER=disabled
     volumes:
       - ./backend:/app
       - uploads:/app/uploads
       - thumbnails:/app/thumbnails
-      - ${GCLOUD_CONFIG_DIR}:/home/appuser/.config/gcloud:ro
     networks:
       - tivit-vision-network
     user: "1000:1000"
@@ -133,4 +104,3 @@ volumes:
   uploads:
   thumbnails:
   redis_data:
-

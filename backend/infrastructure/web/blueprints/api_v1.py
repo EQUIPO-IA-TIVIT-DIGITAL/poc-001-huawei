@@ -52,6 +52,30 @@ def api_response(success: bool, data=None, error=None, status_code=200):
     return jsonify(response), status_code
 
 
+def _foto_url_firmada(foto_url: str) -> str:
+    """Convierte una URI de almacenamiento (s3://, file:// o gs:// legacy) en una URL local."""
+    if not foto_url:
+        return ""
+    if foto_url.startswith(("http://", "https://")):
+        # URL http(s) externa no gestionada: se devuelve tal cual.
+        return foto_url
+    from infrastructure.dependencies import get_storage_adapter
+
+    storage = get_storage_adapter()
+    if not storage or not storage.is_available():
+        return ""
+    signed = None
+    if hasattr(storage, "generate_signed_url_from_storage_uri"):
+        signed = storage.generate_signed_url_from_storage_uri(foto_url, expiration_minutes=60)
+    elif hasattr(storage, "generate_signed_url"):
+        key = foto_url
+        if "://" in foto_url:
+            parts = foto_url.split("://", 1)[1]
+            key = parts.split("/", 1)[1] if "/" in parts else parts
+        signed = storage.generate_signed_url(key, 60)
+    return signed or ""
+
+
 # ========== ENDPOINTS DE AUTENTICACIÓN ==========
 
 
@@ -72,15 +96,10 @@ def check_auth():
         session.clear()
         return api_response(True, {"authenticated": False, "user": None})
 
-    # Generar URL firmada si foto_url es una URI gs:// o URL pública de GCS
+    # Generar URL de acceso si foto_url es una URI de almacenamiento local/legacy
     foto_url = usuario.foto_url or ""
-    if foto_url.startswith("gs://") or foto_url.startswith("https://storage.googleapis.com/"):
-        from infrastructure.adapters.gcp_storage import GCPStorage
-        gcs = GCPStorage()
-        if foto_url.startswith("https://storage.googleapis.com/"):
-            path_part = foto_url.replace("https://storage.googleapis.com/", "")
-            foto_url = f"gs://{path_part}"
-        foto_url = gcs.generate_signed_url_from_gcs_uri(foto_url, expiration_minutes=60) or ""
+    if foto_url:
+        foto_url = _foto_url_firmada(foto_url)
     
     return api_response(
         True,
@@ -112,15 +131,10 @@ def get_current_user():
     if not usuario:
         return api_response(False, error="Usuario no encontrado", status_code=404)
 
-    # Generar URL firmada si foto_url es una URI gs:// o URL pública de GCS
+    # Generar URL de acceso si foto_url es una URI de almacenamiento local/legacy
     foto_url = usuario.foto_url or ""
-    if foto_url.startswith("gs://") or foto_url.startswith("https://storage.googleapis.com/"):
-        from infrastructure.adapters.gcp_storage import GCPStorage as _GCS
-        _gcs = _GCS()
-        if foto_url.startswith("https://storage.googleapis.com/"):
-            path_part = foto_url.replace("https://storage.googleapis.com/", "")
-            foto_url = f"gs://{path_part}"
-        foto_url = _gcs.generate_signed_url_from_gcs_uri(foto_url, expiration_minutes=60) or ""
+    if foto_url:
+        foto_url = _foto_url_firmada(foto_url)
 
     return api_response(
         True,
@@ -261,8 +275,7 @@ def upload_profile_photo():
     """
     import base64
     import uuid
-    from io import BytesIO
-    from infrastructure.adapters.gcp_storage import GCPStorage
+    from infrastructure.dependencies import get_storage_adapter
     
     data = request.get_json() or {}
     image_base64 = data.get("image", "")
@@ -302,19 +315,20 @@ def upload_profile_photo():
         
         filename = f"profile_photos/{usuario.id}_{uuid.uuid4().hex[:8]}.{extension}"
         
-        # Subir a GCS
-        gcs_storage = GCPStorage()
-        gcs_uri = gcs_storage.upload_from_bytes(
-            image_data,
-            filename,
-            content_type=content_type
-        )
-        
-        if not gcs_uri:
+        # Subir a almacenamiento local (MinIO / filesystem)
+        storage = get_storage_adapter()
+        if not storage or not storage.is_available():
+            return api_response(False, {"error": "Almacenamiento no disponible"}), 503
+
+        if hasattr(storage, "upload_from_bytes"):
+            uri = storage.upload_from_bytes(image_data, filename, content_type=content_type)
+        else:
+            uri = storage.upload_file(image_data, filename, content_type=content_type) if False else None
+        if not uri:
             return api_response(False, {"error": "Error al subir la imagen"}), 500
         
-        # Guardar URI gs:// en Firestore (persistente)
-        usuario.foto_url = gcs_uri
+        # Guardar URI persistente en la base de datos
+        usuario.foto_url = uri
         get_user_repository().guardar(usuario)
         
         # Devolver como data URL para que <img src> funcione sin CORS ni cookies adicionales
@@ -331,14 +345,16 @@ def upload_profile_photo():
 @api_v1_bp.route("/auth/profile-photo", methods=["GET"])
 def get_profile_photo():
     """
-    Proxy endpoint: descarga la foto de perfil del usuario desde GCS
+    Proxy endpoint: descarga la foto de perfil del usuario desde almacenamiento local
     y la devuelve directamente. Requiere sesión activa.
 
     Returns:
         Image bytes con el Content-Type correspondiente
     """
-    from infrastructure.adapters.gcp_storage import GCPStorage
     from flask import Response
+    from infrastructure.dependencies import get_storage_adapter
+    from pathlib import Path
+    import tempfile
 
     if "usuario_id" not in session:
         return api_response(False, {"error": "No autenticado"}), 401
@@ -348,28 +364,58 @@ def get_profile_photo():
         return api_response(False, {"error": "No hay foto de perfil"}), 404
 
     foto_url = usuario.foto_url
-    if not foto_url.startswith("gs://"):
-        return api_response(False, {"error": "Formato de URL de foto no soportado"}), 404
 
     try:
-        gcs = GCPStorage()
-        # Extraer el blob path de la URI gs://bucket/path/to/blob
-        path_without_scheme = foto_url[5:]  # Remove "gs://"
-        parts = path_without_scheme.split("/", 1)
-        if len(parts) < 2:
+        storage = get_storage_adapter()
+        if not storage or not storage.is_available():
+            return api_response(False, {"error": "Almacenamiento no disponible"}), 503
+
+        blob_path = None
+        content_type = "image/jpeg"
+
+        if foto_url.startswith("s3://"):
+            parts = foto_url.split("/", 3)
+            blob_path = parts[3] if len(parts) > 3 else parts[-1]
+        elif foto_url.startswith("gs://"):
+            if hasattr(storage, "generate_signed_url_from_storage_uri"):
+                parts = foto_url.split("/", 3)
+                blob_path = parts[3] if len(parts) > 3 else parts[-1]
+            else:
+                parts = foto_url.replace("gs://", "").split("/", 1)
+                blob_path = parts[1] if len(parts) > 1 else None
+        elif foto_url.startswith("file://"):
+            local_path = foto_url.replace("file://", "")
+            if Path(local_path).exists():
+                image_data = Path(local_path).read_bytes()
+                return Response(
+                    image_data,
+                    mimetype=content_type,
+                    headers={"Cache-Control": "private, max-age=3600"},
+                )
+            return api_response(False, {"error": "Archivo no encontrado"}), 404
+        else:
+            return api_response(False, {"error": "Formato de URL de foto no soportado"}), 404
+
+        if not blob_path:
             return api_response(False, {"error": "URI de foto inválida"}), 500
 
-        blob_path = parts[1]
-        blob = gcs.bucket.blob(blob_path)
-        image_data = blob.download_as_bytes()
-        content_type = blob.content_type or "image/jpeg"
+        # Descargar bytes desde MinIO/filesystem usando descargar_archivo
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            storage.descargar_archivo(blob_path, tmp_path)
+            image_data = Path(tmp_path).read_bytes()
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         return Response(
             image_data,
             mimetype=content_type,
-            headers={
-                "Cache-Control": "private, max-age=3600",
-            }
+            headers={"Cache-Control": "private, max-age=3600"},
         )
     except Exception as e:
         logger.error(f"Error descargando foto de perfil: {e}")
@@ -403,7 +449,7 @@ def listar_mis_videos():
             "video_url": f"/socio/media/{v.id}",  # URL proxy (no requiere Signed URL)
             "thumbnail_url": f"/thumbnail/{v.id}",  # URL del thumbnail
             "duracion_segundos": v.metadatos_ia.get("duracion_segundos"),
-            "gcs_uri": v.metadatos_ia.get("gcs_uri"),
+            "storage_uri": v.metadatos_ia.get("storage_uri"),
         }
         for v in videos_usuario
     ]
@@ -552,56 +598,38 @@ def api_version():
     )
 
 
-# ========== ENDPOINTS DE ESTADO GCP ==========
+# ========== ENDPOINTS DE ESTADO LOCAL ==========
 
 
-@api_v1_bp.route("/status/gcp", methods=["GET"])
+@api_v1_bp.route("/status/local", methods=["GET"])
 @api_admin_requerido
-def gcp_status():
+def local_status():
     """
-    [ADMIN] Obtener estado de los servicios de Google Cloud Platform
+    [ADMIN] Obtener estado de los servicios de infraestructura local
 
     Returns:
-        JSON con el estado de cada servicio GCP
+        JSON con el estado de cada servicio
     """
     try:
         from infrastructure.dependencies import (
-            get_gcp_config,
             get_storage_adapter,
-            get_firestore_adapter,
-            get_video_intelligence_adapter,
+            verificar_conexion_local,
         )
 
-        gcp_config = get_gcp_config()
-        storage = get_storage_adapter()
-        firestore = get_firestore_adapter()
-        video_intelligence = get_video_intelligence_adapter()
+        health = verificar_conexion_local()
 
-        status = {
-            "gcp_enabled": gcp_config.is_gcp_enabled() if gcp_config else False,
-            "project_id": gcp_config.PROJECT_ID if gcp_config else None,
-            "region": gcp_config.REGION if gcp_config else None,
-            "services": {
-                "cloud_storage": {
-                    "available": storage.is_available() if storage else False,
-                    "bucket_name": gcp_config.BUCKET_NAME if gcp_config else None,
+        return api_response(True, {
+            "local": {
+                "enabled": True,
+                "services": {
+                    "storage": health["storage"],
+                    "database": health["database"],
+                    "video_analysis": health["video_intelligence"],
+                    "task_queue": health["task_queue"],
+                    "ai_gateway": health["ai_gateway"],
                 },
-                "firestore": {
-                    "available": firestore.is_available() if firestore else False
-                },
-                "video_intelligence": {
-                    "available": video_intelligence.is_available()
-                    if video_intelligence
-                    else False
-                },
-            },
-        }
-
-        # Agregar estadísticas de storage si está disponible
-        if storage and storage.is_available():
-            status["services"]["cloud_storage"]["stats"] = storage.get_storage_stats()
-
-        return api_response(True, {"gcp": status})
+            }
+        })
 
     except Exception as e:
         return api_response(False, error="Error interno del servidor", status_code=500)
@@ -618,13 +646,24 @@ def ai_status():
     """
     try:
         from infrastructure.adapters.ai_service import get_ai_service
-        from infrastructure.adapters.cloud_tasks_adapter import get_cloud_tasks
 
         ai_service = get_ai_service()
-        cloud_tasks = get_cloud_tasks()
+
+        try:
+            from infrastructure.services.job_queue import get_redis_connection
+            get_redis_connection().ping()
+            tasks_available = True
+        except Exception:
+            tasks_available = False
+
+        tasks = {
+            "available": tasks_available,
+            "queue": "video_processing" if tasks_available else None,
+            "service": "Redis + RQ",
+        }
 
         return api_response(
-            True, {"ai": ai_service.get_status(), "tasks": cloud_tasks.get_status()}
+            True, {"ai": ai_service.get_status(), "tasks": tasks}
         )
 
     except Exception as e:
@@ -729,55 +768,78 @@ def analyze_security_context():
     analysis_id = str(uuid.uuid4())
     
     try:
-        # Almacenar análisis pendiente
-        from infrastructure.dependencies import get_firestore_adapter
-        firestore = get_firestore_adapter()
-        
-        analysis_data = {
-            "id": analysis_id,
-            "video_id": video_id,
-            "contexto": contexto,
-            "modo": modo,
-            "estado": "pendiente",
-            "usuario_id": session.get("usuario_id"),
-            "username": session.get("username"),
-            "fecha_solicitud": datetime.utcnow().isoformat(),
-            "resultado": None
-        }
-        
-        if firestore and firestore.is_available():
-            firestore.guardar("security_analyses", analysis_id, analysis_data)
-        
-        # Iniciar procesamiento en background (Cloud Tasks si disponible)
-        from infrastructure.adapters.cloud_tasks_adapter import get_cloud_tasks
-        cloud_tasks = get_cloud_tasks()
-        
-        if cloud_tasks and cloud_tasks.is_available():
-            # Encolar tarea
-            cloud_tasks.encolar_analisis_contextual(
-                analysis_id=analysis_id,
+        from infrastructure.repositories.security_video_repository import SecurityVideoRepository
+
+        video = SecurityVideoRepository().obtener_video(video_id)
+        if not video:
+            return api_response(False, error="Video de seguridad no encontrado", status_code=404)
+        if session.get("rol") != "admin" and video.usuario != session.get("username"):
+            return api_response(False, error="No autorizado", status_code=403)
+
+        # Almacenar análisis pendiente en SQLAlchemy
+        from infrastructure.db.session import SessionLocal
+        from infrastructure.db.models import SecurityAnalysisModel
+
+        session_db = SessionLocal()
+        try:
+            model = SecurityAnalysisModel(
+                id=analysis_id,
                 video_id=video_id,
                 contexto=contexto,
-                modo=modo
+                modo=modo,
+                estado="PENDIENTE",
+                usuario_id=session.get("usuario_id", ""),
+                username=session.get("username", ""),
+                fecha_solicitud=datetime.utcnow().isoformat(),
+                resultado={},
             )
+            session_db.add(model)
+            session_db.commit()
+        finally:
+            session_db.close()
+
+        from infrastructure.services.job_queue import (
+            enqueue_contextual_security_analysis,
+            is_queue_required,
+            is_redis_available,
+        )
+
+        if is_redis_available():
+            job_id = enqueue_contextual_security_analysis(analysis_id, video_id, contexto, modo)
+            if not job_id:
+                s = SessionLocal()
+                try:
+                    m = s.get(SecurityAnalysisModel, analysis_id)
+                    if m:
+                        m.estado = "error"
+                        m.resultado = {"error": "No se pudo encolar el análisis"}
+                        s.commit()
+                finally:
+                    s.close()
+                return api_response(False, error="No se pudo encolar el análisis", status_code=503)
+        elif is_queue_required():
+            s = SessionLocal()
+            try:
+                m = s.get(SecurityAnalysisModel, analysis_id)
+                if m:
+                    m.estado = "error"
+                    m.resultado = {"error": "Cola asíncrona no disponible"}
+                    s.commit()
+            finally:
+                s.close()
+            return api_response(False, error="Cola asíncrona no disponible", status_code=503)
         else:
-            # Ejecutar síncronicamente (para desarrollo local)
-            from use_cases.security_video_processor import SecurityVideoProcessor
+            # The development fallback uses the same function so it persists success/failure.
             import threading
-            
-            def run_analysis():
-                processor = SecurityVideoProcessor()
-                resultado = processor.process_with_context(video_id, contexto, modo)
-                
-                # Actualizar en Firestore
-                if firestore and firestore.is_available():
-                    analysis_data["estado"] = resultado.get("estado", "completado")
-                    analysis_data["resultado"] = resultado
-                    firestore.guardar("security_analyses", analysis_id, analysis_data)
-            
-            # Ejecutar en thread separado
-            thread = threading.Thread(target=run_analysis)
+            from worker import process_contextual_security_analysis
+
+            thread = threading.Thread(
+                target=process_contextual_security_analysis,
+                args=(analysis_id, video_id, contexto, modo),
+                daemon=True,
+            )
             thread.start()
+            job_id = None
         
         return api_response(True, {
             "analysis_id": analysis_id,
@@ -802,30 +864,40 @@ def list_security_analyses():
         JSON: Lista de análisis con su estado
     """
     try:
-        from infrastructure.dependencies import get_firestore_adapter
-        firestore = get_firestore_adapter()
-        
-        if not firestore or not firestore.is_available():
-            return api_response(True, {"analyses": [], "count": 0})
-        
+        from infrastructure.db.session import SessionLocal
+        from infrastructure.db.models import SecurityAnalysisModel
+
         username = session.get("username")
-        
-        # Obtener análisis del usuario
-        all_analyses = firestore.obtener_coleccion("security_analyses")
-        user_analyses = [
-            a for a in all_analyses 
-            if a.get("username") == username
-        ]
-        
-        # Ordenar por fecha (más reciente primero)
-        user_analyses.sort(
-            key=lambda x: x.get("fecha_solicitud", ""), 
-            reverse=True
-        )
-        
+
+        s = SessionLocal()
+        try:
+            rows = (
+                s.query(SecurityAnalysisModel)
+                .filter_by(username=username)
+                .order_by(SecurityAnalysisModel.created_at.desc())
+                .limit(20)
+                .all()
+            )
+            analyses = [
+                {
+                    "id": r.id,
+                    "video_id": r.video_id,
+                    "contexto": r.contexto,
+                    "modo": r.modo,
+                    "estado": r.estado,
+                    "usuario_id": r.usuario_id,
+                    "username": r.username,
+                    "fecha_solicitud": r.fecha_solicitud,
+                    "resultado": r.resultado,
+                }
+                for r in rows
+            ]
+        finally:
+            s.close()
+
         return api_response(True, {
-            "analyses": user_analyses[:20],  # Limitar a 20
-            "count": len(user_analyses)
+            "analyses": analyses,
+            "count": len(analyses),
         })
         
     except Exception as e:
@@ -845,22 +917,34 @@ def get_security_analysis(analysis_id: str):
         JSON: Detalles del análisis
     """
     try:
-        from infrastructure.dependencies import get_firestore_adapter
-        firestore = get_firestore_adapter()
+        from infrastructure.db.session import SessionLocal
+        from infrastructure.db.models import SecurityAnalysisModel
+
+        s = SessionLocal()
+        try:
+            r = s.query(SecurityAnalysisModel).filter_by(id=analysis_id).first()
+        finally:
+            s.close()
         
-        if not firestore or not firestore.is_available():
-            return api_response(False, error="Firestore no disponible", status_code=503)
-        
-        analysis = firestore.obtener("security_analyses", analysis_id)
-        
-        if not analysis:
+        if not r:
             return api_response(False, error="Análisis no encontrado", status_code=404)
         
-        # Verificar que pertenece al usuario
         username = session.get("username")
-        if analysis.get("username") != username:
+        if r.username != username:
             return api_response(False, error="No autorizado", status_code=403)
         
+        analysis = {
+            "id": r.id,
+            "video_id": r.video_id,
+            "contexto": r.contexto,
+            "modo": r.modo,
+            "estado": r.estado,
+            "usuario_id": r.usuario_id,
+            "username": r.username,
+            "fecha_solicitud": r.fecha_solicitud,
+            "resultado": r.resultado,
+        }
+
         return api_response(True, {"analysis": analysis})
         
     except Exception as e:
@@ -882,31 +966,44 @@ def download_security_report(analysis_id: str):
     """
     from flask import send_file
     import os
-    
+
     formato = request.args.get("formato", "pdf").lower()
-    
+
     if formato not in ["pdf", "json", "txt"]:
         return api_response(False, error="Formato no válido (pdf, json, txt)", status_code=400)
-    
+
     try:
-        from infrastructure.dependencies import get_firestore_adapter
-        firestore = get_firestore_adapter()
-        
-        if not firestore or not firestore.is_available():
-            return api_response(False, error="Firestore no disponible", status_code=503)
-        
-        analysis = firestore.obtener("security_analyses", analysis_id)
-        
-        if not analysis:
+        from infrastructure.db.session import SessionLocal
+        from infrastructure.db.models import SecurityAnalysisModel
+
+        s = SessionLocal()
+        try:
+            r = s.query(SecurityAnalysisModel).filter_by(id=analysis_id).first()
+        finally:
+            s.close()
+
+        if not r:
             return api_response(False, error="Análisis no encontrado", status_code=404)
-        
+
         # Verificar autorización
         username = session.get("username")
-        if analysis.get("username") != username:
+        if r.username != username:
             return api_response(False, error="No autorizado", status_code=403)
-        
+
+        analysis = {
+            "id": r.id,
+            "video_id": r.video_id,
+            "contexto": r.contexto,
+            "modo": r.modo,
+            "estado": r.estado,
+            "usuario_id": r.usuario_id,
+            "username": r.username,
+            "fecha_solicitud": r.fecha_solicitud,
+            "resultado": r.resultado,
+        }
+
         # Obtener path del reporte
-        resultado = analysis.get("resultado", {})
+        resultado = r.resultado or {}
         report_path = resultado.get(f"report_path_{formato}") or resultado.get("report_path")
         
         if not report_path or not os.path.exists(report_path):

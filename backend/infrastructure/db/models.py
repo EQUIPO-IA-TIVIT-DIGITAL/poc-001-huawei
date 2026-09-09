@@ -1,6 +1,6 @@
 """
 SQLAlchemy models — local offline 32B
-Tablas espejo de Firestore collections. pgvector para embeddings.
+Tablas espejo de las colecciones de dominio. pgvector para embeddings.
 """
 from sqlalchemy import String, Integer, Float, Boolean, Text, DateTime, JSON, Index, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -22,7 +22,7 @@ class VideoModel(Base):
     estado: Mapped[str] = mapped_column(String(32), default="PENDIENTE", index=True)
     resultado_ia: Mapped[str] = mapped_column(Text, default="")
     razon_rechazo: Mapped[str] = mapped_column(Text, default="")
-    gcs_uri: Mapped[str] = mapped_column(String(500), default="")
+    storage_uri: Mapped[str] = mapped_column(String(500), default="")
     s3_uri: Mapped[str] = mapped_column(String(500), default="")
     duracion_segundos: Mapped[float] = mapped_column(Float, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -50,9 +50,49 @@ class WorkspaceModel(Base):
     descripcion: Mapped[str] = mapped_column(Text, default="")
     categoria: Mapped[str] = mapped_column(String(64), default="general")
     nivel_tolerancia: Mapped[str] = mapped_column(String(32), default="medio")
+    es_general: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     eliminado: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    metadatos: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class WorkspaceAuditModel(Base):
+    __tablename__ = "workspace_audit_logs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=gen_id)
+    usuario: Mapped[str] = mapped_column(String(120), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), index=True)
+    accion: Mapped[str] = mapped_column(String(64))
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+
+class AIUsageLogModel(Base):
+    __tablename__ = "ai_usage_logs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=gen_id)
+    usuario: Mapped[str] = mapped_column(String(120), index=True)
+    fecha: Mapped[str] = mapped_column(String(16), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+class AIDailyLimitModel(Base):
+    __tablename__ = "ai_daily_limits"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)  # usuario_fecha
+    usuario: Mapped[str] = mapped_column(String(120), index=True)
+    fecha: Mapped[str] = mapped_column(String(16), index=True)
+    requests_count: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    last_updated: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+class AIResponseCacheModel(Base):
+    __tablename__ = "ai_response_cache"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=gen_id)
+    prompt_hash: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str] = mapped_column(String(64), index=True)
+    response: Mapped[dict] = mapped_column(JSON, default=dict)
+    timestamp: Mapped[str] = mapped_column(String(64), index=True)
+    expires_at: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class OperationalAnalysisModel(Base):
     __tablename__ = "operational_analyses"
@@ -115,3 +155,17 @@ class SecurityEventModel(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     risk_level: Mapped[str] = mapped_column(String(16), default="BAJO")
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+class SecurityAnalysisModel(Base):
+    __tablename__ = "security_analyses"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=gen_id)
+    video_id: Mapped[str] = mapped_column(String(64), index=True)
+    contexto: Mapped[str] = mapped_column(Text, default="")
+    modo: Mapped[str] = mapped_column(String(16), default="ESTANDAR")
+    estado: Mapped[str] = mapped_column(String(32), default="PENDIENTE", index=True)
+    usuario_id: Mapped[str] = mapped_column(String(64), index=True)
+    username: Mapped[str] = mapped_column(String(120), index=True)
+    fecha_solicitud: Mapped[str] = mapped_column(String(64), default="")
+    resultado: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -31,20 +31,15 @@ from infrastructure.validators import (
 )
 from infrastructure.rate_limiter import limiter
 from domain.entities import Workspace, EstadoVideo, ReglaNegocioException
-from config.gcp_config import GCPConfig
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Inicializar cliente Firestore para transacciones
+# Inicializar cliente Firestore para transacciones (eliminado: stack 100% local)
 _firestore_client = None
 
 def _get_firestore_client():
-    global _firestore_client
-    if _firestore_client is None:
-        from google.cloud import firestore
-        _firestore_client = firestore.Client(project=GCPConfig().PROJECT_ID)
-    return _firestore_client
+    return None
 
 # Constantes de validación
 MAX_WORKSPACES_PER_USER = 20
@@ -187,10 +182,8 @@ def create_workspace():
         }
         
         # Ejecutar transacción atómica
-        db = _get_firestore_client()
-        transaction = db.transaction()
         success, error_msg, workspace_id = crear_workspace_atomico(
-            transaction, db, usuario, nombre, workspace_data
+            None, None, usuario, nombre, workspace_data
         )
         
         if not success:
@@ -405,16 +398,15 @@ def update_workspace(workspace_id):
         if not updates:
             return jsonify({'success': False, 'error': 'No hay cambios para aplicar'}), 400
         
-        db = _get_firestore_client()
-        transaction = db.transaction()
-        
         # Obtener datos antiguos para auditoría
-        workspace_ref = db.collection('workspaces').document(workspace_id)
-        workspace_doc = workspace_ref.get()
-        old_data = workspace_doc.to_dict() if workspace_doc.exists else {}
+        old_ws = _get_workspace_repo().obtener_por_id(workspace_id)
+        old_data = {
+            'nombre': old_ws.nombre if old_ws else 'Desconocido',
+            'descripcion': old_ws.descripcion if old_ws else '',
+        }
         
         success, error_msg = actualizar_workspace_atomico(
-            transaction, db, workspace_id, usuario, updates
+            None, None, workspace_id, usuario, updates
         )
         
         if not success:
@@ -479,8 +471,6 @@ def delete_workspace(workspace_id):
         # Verificar si es hard delete o soft delete
         hard_delete = request.args.get('hard_delete', 'false').lower() == 'true'
         
-        db = _get_firestore_client()
-        
         if hard_delete:
             # HARD DELETE: Eliminar permanentemente moviendo videos
             workspace_general = _get_workspace_repo().obtener_workspace_general(usuario)
@@ -488,14 +478,14 @@ def delete_workspace(workspace_id):
             video_ids = [video.id for video in videos if getattr(video, 'workspace_id', None) == workspace_id]
             
             success, error_msg = eliminar_workspace_con_batch(
-                db, workspace_id, usuario, workspace_general.id, video_ids
+                None, workspace_id, usuario, workspace_general.id, video_ids
             )
             
             accion = 'hard_delete'
         else:
             # SOFT DELETE: Mover a papelera
             success, error_msg = soft_delete_workspace_atomico(
-                db, workspace_id, usuario
+                None, workspace_id, usuario
             )
             
             accion = 'soft_delete'
@@ -552,9 +542,8 @@ def restore_workspace(workspace_id):
         usuario = session['username']
         
         # Restaurar con transacción atómica
-        db = _get_firestore_client()
         success, error_msg = restaurar_workspace_atomico(
-            db, workspace_id, usuario
+            None, workspace_id, usuario
         )
         
         if not success:
@@ -604,27 +593,35 @@ def list_deleted_workspaces():
     try:
         usuario = session['username']
         
-        # Obtener workspaces eliminados desde Firestore
-        from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-        from config.gcp_config import GCPConfig
-        
-        adapter = FirestoreAdapter(GCPConfig())
-        workspaces_eliminados = adapter.get_workspaces_eliminados(usuario)
-        
+        # Obtener workspaces eliminados desde SQLAlchemy
+        from infrastructure.db.session import SessionLocal
+        from infrastructure.db.models import WorkspaceModel
+
+        s = SessionLocal()
+        try:
+            rows = (
+                s.query(WorkspaceModel)
+                .filter(WorkspaceModel.usuario == usuario, WorkspaceModel.eliminado == True)  # noqa: E712
+                .all()
+            )
+        finally:
+            s.close()
+
         # Convertir a formato JSON
         workspaces_json = []
-        for ws in workspaces_eliminados:
+        for m in rows:
+            meta = m.metadatos or {}
             workspaces_json.append({
-                'id': ws.id,
-                'nombre': ws.nombre,
-                'descripcion': ws.descripcion,
-                'color': ws.color,
-                'icono_url': getattr(ws, 'icono_url', ''),
-                'categoria': getattr(ws, 'categoria', 'general'),
-                'fecha_creacion': ws.fecha_creacion,
-                'fecha_eliminacion': getattr(ws, 'fecha_eliminacion', ''),
-                'eliminado_por': getattr(ws, 'eliminado_por', ''),
-                'estadisticas': ws.estadisticas
+                'id': m.id,
+                'nombre': m.nombre,
+                'descripcion': m.descripcion or '',
+                'color': meta.get('color', ''),
+                'icono_url': meta.get('icono_url', ''),
+                'categoria': m.categoria or 'general',
+                'fecha_creacion': meta.get('fecha_creacion', ''),
+                'fecha_eliminacion': meta.get('fecha_eliminacion', ''),
+                'eliminado_por': meta.get('eliminado_por', ''),
+                'estadisticas': meta.get('estadisticas', {})
             })
         
         return jsonify({
@@ -668,7 +665,6 @@ def duplicate_workspace(workspace_id):
             }), 400
         
         # Duplicar con transacción atómica
-        db = _get_firestore_client()
         
         # Obtener workspace original para auditoría
         workspace_original = _get_workspace_repo().obtener_por_id(workspace_id)
@@ -676,7 +672,7 @@ def duplicate_workspace(workspace_id):
             return jsonify({'success': False, 'error': 'Workspace no encontrado'}), 404
         
         success, error_msg, nuevo_id = duplicar_workspace_atomico(
-            db, usuario, workspace_id, nuevo_nombre
+            None, usuario, workspace_id, nuevo_nombre
         )
         
         if not success:

@@ -9,7 +9,7 @@ Escanea el 100% del video con múltiples capas de detección:
 5. Análisis temporal multi-referencia (objeto abandonado, persona quieta)
 
 Produce un mapa temporal completo de actividad que alimenta al clasificador
-de eventos (Nivel 1) antes de enviar clips a Gemini.
+de eventos (Nivel 1) antes de enviar clips a la IA local.
 
 Resolución de análisis: 320x240 (rápido, suficiente para detección) 
 Intervalo de muestreo: 1 frame cada 0.5 segundos
@@ -597,7 +597,7 @@ class DenseVideoScanner:
      ) -> list:  # List[MotionSegment] — MotionSegment importado lazy dentro del método
         """
         Convierte DetectedEvents del escáner en MotionSegments
-        compatibles con el pipeline existente (clip extraction + Gemini).
+        compatibles con el pipeline existente (clip extraction + IA local).
         
         Estrategia:
         - Subdivide eventos largos en ventanas de ~30s

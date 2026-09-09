@@ -1,6 +1,6 @@
 """
-Repositorio de Videos con Firestore
-Persistencia permanente en Google Cloud Firestore
+Repositorio de Videos con persistencia local
+Cache en memoria + persistencia en PostgreSQL/SQLAlchemy
 """
 
 from typing import List, Optional, Dict, Any
@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 
 class VideoRepositoryFirestore:
     """
-    Repositorio de videos con persistencia en Firestore.
+    Repositorio de videos con persistencia en la base de datos local.
 
     Implementa el patrón Singleton con cache en memoria para rendimiento.
-    Todos los cambios se persisten en Firestore automáticamente.
+    Todos los cambios se persisten en PostgreSQL/SQLAlchemy automáticamente.
 
-    Estructura en Firestore:
-    - videos/{video_id} → Documento de video
+    Estructura en la base de datos:
+    - tabla de videos → Video
     """
 
     _instance = None
@@ -36,7 +36,7 @@ class VideoRepositoryFirestore:
         return cls._instance
 
     def __init__(self):
-        """Inicializa el repositorio con conexión a Firestore"""
+        """Inicializa el repositorio con cache en memoria"""
         if self._initialized:
             return
 
@@ -45,27 +45,12 @@ class VideoRepositoryFirestore:
         self._firestore = None
         self._initialized = True
 
-        self._init_firestore()
-
     def _init_firestore(self):
-        """Inicializa la conexión a Firestore"""
-        try:
-            from infrastructure.adapters.gcp_firestore import FirestoreAdapter
-            from config.gcp_config import GCPConfig
-
-            self._firestore = FirestoreAdapter(GCPConfig())
-
-            if self._firestore.is_available():
-                logger.info("✅ Repositorio de videos conectado a Firestore")
-            else:
-                logger.warning("⚠️ Firestore no disponible - videos solo en memoria")
-        except Exception as e:
-            logger.error(f"❌ Error conectando a Firestore: {e}")
-            self._firestore = None
+        self._firestore = None
 
     def guardar(self, video: Video) -> Video:
         """
-        Guarda un video en Firestore y cache.
+        Guarda un video en la base de datos y cache.
 
         Args:
             video: Video a guardar
@@ -77,13 +62,13 @@ class VideoRepositoryFirestore:
             # Guardar en cache
             self._cache[video.id] = video
 
-            # Persistir en Firestore
+            # Persistir en la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     self._firestore.save_video(video)
-                    logger.debug(f"✅ Video guardado en Firestore: {video.id}")
+                    logger.debug(f"✅ Video guardado en la base de datos: {video.id}")
                 except Exception as e:
-                    logger.error(f"❌ Error guardando video en Firestore: {e}")
+                    logger.error(f"❌ Error guardando video en la base de datos: {e}")
 
             return video
 
@@ -94,7 +79,7 @@ class VideoRepositoryFirestore:
             if video_id in self._cache:
                 return self._cache[video_id]
 
-            # Si no está en cache, buscar en Firestore
+            # Si no está en cache, buscar en la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     video = self._firestore.get_video(video_id)
@@ -216,7 +201,7 @@ class VideoRepositoryFirestore:
             if video_id in self._cache:
                 del self._cache[video_id]
 
-            # Eliminar de Firestore
+            # Eliminar de la base de datos
             if self._firestore and self._firestore.is_available():
                 try:
                     return self._firestore.delete_video(video_id)
@@ -247,7 +232,7 @@ class VideoRepositoryFirestore:
                 stats = self._firestore.get_statistics()
                 return stats.get("videos", {}).get("total", 0)
             except Exception as e:
-                logger.debug(f"Could not get Firestore statistics: {e}")
+                logger.debug(f"Could not get database statistics: {e}")
 
         with self._lock_repo:
             return len(self._cache)
@@ -411,7 +396,7 @@ class VideoRepositoryFirestore:
 
     def sync_videos_from_disk(self, upload_dir: str, usuario: str, workspace_id: str = None) -> Dict[str, Any]:
         """
-        Escanea el directorio de uploads y re-indexa archivos huérfanos en Firestore.
+        Escanea el directorio de uploads y re-indexa archivos huérfanos en la base de datos.
         
         Args:
             upload_dir: Ruta al directorio de uploads
@@ -457,7 +442,7 @@ class VideoRepositoryFirestore:
             # Extraer video_id del nombre (formato: UUID.ext)
             video_id = archivo.stem
             
-            # Verificar si ya existe en Firestore
+            # Verificar si ya existe en la base de datos
             existing = self.obtener_por_id(video_id)
             if existing:
                 skipped += 1

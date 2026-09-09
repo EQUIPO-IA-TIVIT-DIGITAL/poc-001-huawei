@@ -1494,32 +1494,32 @@ def preview_video(video_id):
     # 2. Generar nueva URL firmada de Cloud Storage
     storage = get_storage_adapter()
     if storage and storage.is_available():
-        gcs_uri = video.metadatos_ia.get("gcs_uri", "")
-        if gcs_uri:
+        storage_uri = video.metadatos_ia.get("storage_uri", "")
+        if storage_uri:
             import re
 
             # Parsear URI de GCS de forma segura: gs://bucket/path/to/blob
             # Esto corrige el error donde split('/')[-1] eliminaba el directorio padre (ej: videos/)
-            match = re.match(r"gs://([^/]+)/(.+)", gcs_uri)
+            match = re.match(r"gs://([^/]+)/(.+)", storage_uri)
 
             if match:
-                gcs_path = match.group(2)
+                storage_path = match.group(2)
 
                 # Compatibilidad: verificar qué método tiene el adaptador
                 # (El protocolo define get_signed_url pero la impl puede tener generate_signed_url)
                 signed_url = None
                 if hasattr(storage, "generate_signed_url"):
                     signed_url = storage.generate_signed_url(
-                        gcs_path, expiration_minutes=60
+                        storage_path, expiration_minutes=60
                     )
                 elif hasattr(storage, "get_signed_url"):
-                    signed_url = storage.get_signed_url(gcs_path, expiration_minutes=60)
+                    signed_url = storage.get_signed_url(storage_path, expiration_minutes=60)
 
                 if signed_url:
                     return redirect(signed_url)
             else:
                 # Fallback para lógica antigua o formatos sin gs://
-                current_app.logger.warning(f"Formato GCS URI no reconocido: {gcs_uri}")
+                current_app.logger.warning(f"Formato de URI de almacenamiento no reconocido: {storage_uri}")
 
     # 3. Fallback: servir desde archivo local
     # Primero intentar con la ruta exacta guardada en la entidad
@@ -1586,8 +1586,8 @@ def get_thumbnail(video_id):
             current_app.logger.error(f"Error generando thumbnail para {video_id}: {e}")
 
     # Si el video no está local pero tiene GCS URI, descargar temporalmente
-    gcs_uri = video.metadatos_ia.get("gcs_uri")
-    if gcs_uri:
+    storage_uri = video.metadatos_ia.get("storage_uri")
+    if storage_uri:
         try:
             current_app.logger.info(
                 f"Descargando video desde GCS para generar thumbnail: {video_id}"
@@ -1602,27 +1602,19 @@ def get_thumbnail(video_id):
                     temp_path = temp_file.name
 
                 try:
-                    # Extraer el path de GCS desde el URI
-                    # gcs_uri format: gs://bucket-name/path/to/video.mp4
-                    gcs_path = (
-                        gcs_uri.replace("gs://", "").split("/", 1)[1]
-                        if "gs://" in gcs_uri
-                        else None
-                    )
+                    # Extraer el path del blob desde el URI
+                    if "gs://" in storage_uri:
+                        storage_path = storage_uri.split("/", 3)[3] if len(storage_uri.split("/", 3)) > 3 else None
+                    elif "s3://" in storage_uri:
+                        storage_path = storage_uri.split("/", 3)[3] if len(storage_uri.split("/", 3)) > 3 else None
+                    elif storage_uri.startswith("file://"):
+                        storage_path = storage_uri.replace("file://", "")
+                    else:
+                        storage_path = None
 
-                    if gcs_path:
-                        # Descargar desde GCS
-                        from google.cloud import storage
-
-                        bucket_name = os.getenv(
-                            "GCS_BUCKET_NAME", "accessfan-videos-us-central1"
-                        )
-                        storage_client = storage.Client()
-                        bucket = storage_client.bucket(bucket_name)
-                        blob = bucket.blob(gcs_path)
-
-                        # Descargar al archivo temporal
-                        blob.download_to_filename(temp_path)
+                    if storage_path:
+                        # Descargar desde almacenamiento local (MinIO / filesystem)
+                        storage_adapter.descargar_archivo(storage_path, temp_path)
 
                         # Generar thumbnail
                         thumbnail_service = ThumbnailService()
@@ -1635,7 +1627,7 @@ def get_thumbnail(video_id):
 
                         if generated_path and Path(generated_path).exists():
                             current_app.logger.info(
-                                f"Thumbnail generado desde GCS: {video_id}"
+                                f"Thumbnail generado desde almacenamiento local: {video_id}"
                             )
                             return send_file(str(generated_path), mimetype="image/jpeg")
 
@@ -1646,7 +1638,7 @@ def get_thumbnail(video_id):
 
         except Exception as e:
             current_app.logger.error(
-                f"Error descargando desde GCS para thumbnail {video_id}: {e}"
+                f"Error descargando video para thumbnail {video_id}: {e}"
             )
 
     # Si todo falla, devolver placeholder SVG
@@ -1679,7 +1671,8 @@ def proxy_video(video_id):
     No requiere Signed URLs — usa las credenciales ADC del servidor.
     """
     from flask import send_file
-    from google.cloud import storage as gcs_lib
+    from infrastructure.dependencies import get_storage_adapter
+    import tempfile
 
     video = get_video_repository().obtener_por_id(video_id)
     if not video:
@@ -1689,81 +1682,48 @@ def proxy_video(video_id):
     if video.usuario != session.get("username"):
         return jsonify({"success": False, "error": "Acceso denegado"}), 403
 
-    # Intentar servir desde GCS
-    gcs_uri = video.metadatos_ia.get("gcs_uri") if video.metadatos_ia else None
-    if gcs_uri and "gs://" in gcs_uri:
+    # Intentar servir desde almacenamiento local (MinIO / filesystem)
+    storage_uri = video.metadatos_ia.get("storage_uri") if video.metadatos_ia else None
+    if storage_uri and ("gs://" in storage_uri or "s3://" in storage_uri):
         try:
-            parts = gcs_uri.replace("gs://", "").split("/", 1)
-            bucket_name = parts[0]
-            blob_path = parts[1] if len(parts) > 1 else None
+            blob_path = None
+            if storage_uri.startswith("file://"):
+                blob_path = storage_uri.replace("file://", "")
+            elif len(storage_uri.split("/", 3)) > 3:
+                blob_path = storage_uri.split("/", 3)[3]
 
             if blob_path:
-                storage_client = gcs_lib.Client()
-                bucket = storage_client.bucket(bucket_name)
-                blob = bucket.blob(blob_path)
-
-                # Detectar Content-Type
-                nombre = video.metadatos_ia.get("nombre_archivo", "video.mp4")
-                ext = Path(nombre).suffix.lower().lstrip(".")
-                mime_map = {
-                    "mp4": "video/mp4", "mov": "video/quicktime",
-                    "avi": "video/x-msvideo", "webm": "video/webm",
-                    "mkv": "video/x-matroska",
-                }
-                content_type = mime_map.get(ext, "video/mp4")
-
-                # Soporte Range requests
-                range_header = request.headers.get("Range")
-                blob_size = blob.size
-                if blob_size is None:
-                    blob.reload()
-                    blob_size = blob.size or 0
-
-                if range_header:
-                    # Parsear "bytes=start-end"
-                    range_match = range_header.replace("bytes=", "").split("-")
-                    start = int(range_match[0]) if range_match[0] else 0
-                    end = int(range_match[1]) if len(range_match) > 1 and range_match[1] else blob_size - 1
-                    end = min(end, blob_size - 1)
-                    length = end - start + 1
-
-                    chunk = blob.download_as_bytes(start=start, end=end)
-
-                    response = Response(
-                        chunk,
-                        status=206,
-                        mimetype=content_type,
-                        direct_passthrough=True,
-                    )
-                    response.headers["Content-Range"] = f"bytes {start}-{end}/{blob_size}"
-                    response.headers["Accept-Ranges"] = "bytes"
-                    response.headers["Content-Length"] = str(length)
-                    response.headers["Cache-Control"] = "private, max-age=3600"
-                    return response
-
-                # Sin Range: streaming completo
-                def generate():
-                    chunk_size = 1024 * 1024  # 1 MB
-                    offset = 0
-                    while offset < blob_size:
-                        end_byte = min(offset + chunk_size - 1, blob_size - 1)
-                        chunk = blob.download_as_bytes(start=offset, end=end_byte)
-                        yield chunk
-                        offset += chunk_size
-
-                response = Response(
-                    generate(),
-                    status=200,
-                    mimetype=content_type,
-                    direct_passthrough=True,
-                )
-                response.headers["Content-Length"] = str(blob_size)
-                response.headers["Accept-Ranges"] = "bytes"
-                response.headers["Cache-Control"] = "private, max-age=3600"
-                return response
+                startswith_scheme = storage_uri.startswith("file://")
+                storage = get_storage_adapter()
+                if not storage or not storage.is_available():
+                    current_app.logger.warning(f"Almacenamiento no disponible para {video_id}")
+                elif startswith_scheme and Path(blob_path).exists():
+                    return send_file(blob_path, mimetype="video/mp4", conditional=True)
+                elif not startswith_scheme:
+                    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+                    os.close(fd)
+                    try:
+                        if not storage.descargar_archivo(blob_path, tmp_path):
+                            current_app.logger.warning(f"Blob no encontrado para {video_id}: {blob_path}")
+                        else:
+                            f = open(tmp_path, "rb")
+                            response = send_file(f, mimetype="video/mp4", conditional=True)
+                            try:
+                                os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                            return response
+                    except Exception as e:
+                        current_app.logger.warning(f"Error streaming video {video_id}: {e}")
+                    finally:
+                        try:
+                            if os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
+                        except Exception:
+                            pass
 
         except Exception as e:
-            current_app.logger.warning(f"Error streaming video {video_id} desde GCS: {e}")
+            current_app.logger.warning(f"Error streaming video {video_id}: {e}")
 
     # Fallback: archivo local
     ruta = video.ruta_archivo

@@ -36,7 +36,7 @@ export interface SecurityVideo {
   ubicacion: string;
   fecha_grabacion: string;
   duracion_segundos: number;
-  ruta_gcs: string;
+  storage_path: string;
   estado: EstadoSecurityVideo;
   metadata_tecnico: Record<string, any>;
   estadisticas: Record<string, any>;
@@ -107,8 +107,8 @@ export interface InitUploadResponse {
   success: boolean;
   video_id: string;
   upload_url: string;
-  gcs_path: string;
-  bucket: string;
+  storage_path: string;
+  storage_bucket: string;
   blob_name: string;
   expiration_hours: number;
   error?: string;
@@ -165,7 +165,7 @@ class SecurityVideoService {
   }
 
   /**
-   * Sube un archivo a GCS usando resumable upload
+   * Sube un archivo al almacenamiento usando carga reanudable
    */
   async subirArchivo(
     uploadUrl: string,
@@ -190,7 +190,7 @@ class SecurityVideoService {
       return true;
     } catch (error: any) {
       console.error('Error subiendo archivo:', error);
-      throw new Error('Error subiendo archivo a Cloud Storage');
+       throw new Error('Error subiendo archivo al almacenamiento local');
     }
   }
 
@@ -520,4 +520,3 @@ export const securityVideoService = new SecurityVideoService();
 export const obtenerVideo = (videoId: string) => securityVideoService.obtenerVideo(videoId);
 export const obtenerEventosVideo = (videoId: string, clasificacion?: ClasificacionEvento) =>
   securityVideoService.obtenerEventos(videoId, clasificacion as any).then(res => res.eventos as unknown as EventoSeguridad[]);
-

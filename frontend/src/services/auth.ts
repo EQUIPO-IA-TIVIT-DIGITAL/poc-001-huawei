@@ -1,5 +1,7 @@
 import { apiRequest, AuthError } from '../lib/api';
 
+let sessionVerified = false;
+
 export interface User {
     id: string;
     username?: string;
@@ -31,7 +33,7 @@ interface RegisterData {
 
 /**
  * Only persist the minimum non-sensitive fields to localStorage.
- * foto_url is intentionally excluded: it contains expiring GCS signed URLs
+ * foto_url is intentionally excluded: it contains expiring storage signed URLs
  * that should be fetched fresh from the server on each session.
  * Arbitrary extra fields ([key: string]: any) are excluded to avoid
  * accidentally caching sensitive data that might be added in the future.
@@ -61,18 +63,10 @@ export const authService = {
 
         if (response?.user) {
             localStorage.setItem('accessfan_user', JSON.stringify(_sanitizeForStorage(response.user)));
+            sessionVerified = true;
             return response.user;
         }
         return null;
-    },
-
-    /**
-     * GET /api/auth/microsoft/login - Iniciar sesión con Microsoft (Azure AD)
-     * Redirige al portal de Microsoft — el backend maneja todo el flujo OAuth2.
-     */
-    loginWithMicrosoft(): void {
-        const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001';
-        window.location.href = `${apiBase}/api/auth/microsoft/login`;
     },
 
     /**
@@ -85,6 +79,7 @@ export const authService = {
             console.error('Logout failed on server', error);
         }
         localStorage.removeItem('accessfan_user');
+        sessionVerified = false;
     },
 
     /**
@@ -95,6 +90,7 @@ export const authService = {
             const response = await apiRequest<{ authenticated: boolean; user: User | null }>('/api/check-auth');
             if (response.authenticated && response.user) {
                 localStorage.setItem('accessfan_user', JSON.stringify(_sanitizeForStorage(response.user)));
+                sessionVerified = true;
                 return response.user;
             } else {
                 this.logout();
@@ -163,7 +159,7 @@ export const authService = {
     },
 
     isAuthenticated(): boolean {
-        return !!localStorage.getItem('accessfan_user');
+        return sessionVerified;
     },
 
     updateLocalUser(updates: Partial<User>) {

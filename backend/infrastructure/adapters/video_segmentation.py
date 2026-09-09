@@ -281,42 +281,40 @@ class VideoSegmentationAdapter:
         
         return self.extract_frames(video_path, timestamps, output_dir)
     
-    def upload_to_gcs(self, local_path: str, gcs_path: str) -> bool:
+    def upload_to_storage(self, local_path: str, storage_path: str) -> bool:
         """
-        Sube un archivo a Google Cloud Storage
+        Sube un archivo al almacenamiento local
         
         Args:
             local_path: Ruta local del archivo
-            gcs_path: Ruta GCS de destino (gs://bucket/path)
+            storage_path: Ruta de destino (s3://bucket/path, file://path o key)
         
         Returns:
             True si se subió correctamente
         """
         try:
-            from google.cloud import storage
-            
-            if not gcs_path.startswith("gs://"):
+            from infrastructure.dependencies import get_storage_adapter
+
+            blob_name = storage_path
+            if "://" in storage_path:
+                _, remainder = storage_path.split("://", 1)
+                blob_name = remainder.split("/", 1)[1] if "/" in remainder else remainder
+
+            storage = get_storage_adapter()
+            if not storage or not storage.is_available():
                 return False
-            
-            path_parts = gcs_path.replace("gs://", "").split("/", 1)
-            if len(path_parts) != 2:
-                return False
-            
-            bucket_name, blob_name = path_parts
-            
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(blob_name)
-            
-            blob.upload_from_filename(local_path)
+            if hasattr(storage, "upload_file"):
+                storage.upload_file(local_path, blob_name)
+            else:
+                storage.upload_video(local_path, blob_name)
             
             file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
-            logger.info(f"✅ Archivo subido a GCS: {gcs_path} ({file_size_mb:.1f} MB)")
+            logger.info(f"✅ Archivo subido al almacenamiento: {storage_path} ({file_size_mb:.1f} MB)")
             
             return True
         
         except Exception as e:
-            logger.error(f"❌ Error subiendo a GCS: {e}")
+            logger.error(f"❌ Error subiendo al almacenamiento: {e}")
             return False
     
     def batch_extract_clips(
@@ -324,8 +322,8 @@ class VideoSegmentationAdapter:
         video_path: str,
         segments: List[Dict[str, Any]],
         output_dir: str,
-        upload_to_gcs: bool = False,
-        gcs_base_path: Optional[str] = None
+        upload_to_storage: bool = False,
+        storage_base_path: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Extrae múltiples clips de un video
@@ -334,8 +332,8 @@ class VideoSegmentationAdapter:
             video_path: Ruta al video fuente
             segments: Lista de segmentos con timestamp_inicio y duracion
             output_dir: Directorio donde guardar los clips
-            upload_to_gcs: Si True, sube los clips a GCS
-            gcs_base_path: Ruta base en GCS (gs://bucket/path/)
+            upload_to_storage: Si True, sube los clips al almacenamiento
+            storage_base_path: Ruta base en el almacenamiento
         
         Returns:
             Lista de segmentos con rutas de clips agregadas
@@ -364,11 +362,10 @@ class VideoSegmentationAdapter:
                 segment_result = segment.copy()
                 segment_result["clip_path_local"] = local_clip_path
                 
-                # Subir a GCS si se solicita
-                if upload_to_gcs and gcs_base_path:
-                    gcs_clip_path = f"{gcs_base_path.rstrip('/')}/{clip_filename}"
-                    if self.upload_to_gcs(local_clip_path, gcs_clip_path):
-                        segment_result["clip_url"] = gcs_clip_path
+                if upload_to_storage and storage_base_path:
+                    storage_clip_path = f"{storage_base_path.rstrip('/')}/{clip_filename}"
+                    if self.upload_to_storage(local_clip_path, storage_clip_path):
+                        segment_result["clip_url"] = storage_clip_path
                 
                 results.append(segment_result)
             

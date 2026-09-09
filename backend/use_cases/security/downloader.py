@@ -12,12 +12,12 @@ class SecurityVideoDownloader:
     def __init__(self, optimized_processor):
         self.optimized_processor = optimized_processor
 
-    def download_or_get_cached(self, video_id: str, ruta_gcs: str) -> str:
+    def download_or_get_cached(self, video_id: str, storage_path: str) -> str:
         cached_path = self.get_cached_video_path(video_id)
         if cached_path:
             return cached_path
         
-        local_video_path = self.optimized_processor.download_from_gcs(ruta_gcs)
+        local_video_path = self.optimized_processor.download_from_storage(storage_path)
         self.cache_video(video_id, local_video_path)
         return local_video_path
 

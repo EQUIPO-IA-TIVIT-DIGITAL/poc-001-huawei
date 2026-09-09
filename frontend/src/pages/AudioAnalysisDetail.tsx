@@ -245,8 +245,8 @@ export default function AudioAnalysisDetail() {
   };
 
   const getPlayableAudioUrl = (): string | null => {
-    if (analysis?.audio_gcs_url?.startsWith('http')) return analysis.audio_gcs_url;
-    if (analysis?.video_gcs_url?.startsWith('http')) return analysis.video_gcs_url;
+    if (analysis?.audio_url?.startsWith('http')) return analysis.audio_url;
+    if (analysis?.video_url?.startsWith('http')) return analysis.video_url;
     return null;
   };
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBaseUrl } from '../lib/backendUrl';
-import { Upload, X, FileVideo, Trash2, AlertCircle, Film, Plus, CheckCircle2 } from 'lucide-react';
+import { Upload, FileVideo, Trash2, AlertCircle, Plus } from 'lucide-react';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 

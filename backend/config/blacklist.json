@@ -35,7 +35,7 @@
     "ilegal": ["pirateria", "hackeo", "malware", "contenido_ilegal", "armas", "robo", "fraude"],
     "odio": ["odio", "discriminacion", "racismo", "xenofobia", "nazi", "fascismo"]
   },
-  "etiquetas_video_intelligence_prohibidas": {
+  "etiquetas_vision_prohibidas": {
     "alto_riesgo": ["violence", "weapon", "gun", "knife", "blood", "fight", "war"],
     "riesgo_moderado": ["smoking", "cigarette", "drug", "gambling"],
     "requiere_revision": ["protest", "accident", "injury"]
@@ -54,5 +54,5 @@
   },
   "version": "4.0",
   "ultima_actualizacion": "2025-12-23",
-  "notas": "Pipeline optimizado: Gemini Vision PRIMERO + Video Intelligence + Speech-to-Text + Gemini Decisor"
+  "notas": "Pipeline optimizado: vision local + Whisper + decisión de IA local"
 }

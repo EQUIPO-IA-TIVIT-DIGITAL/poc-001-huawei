@@ -83,7 +83,7 @@ class OpenCVMotionDetector:
         Detecta segmentos con movimiento en un video
         
         Args:
-            video_path: Ruta al archivo de video (local o descargado de GCS)
+            video_path: Ruta al archivo de video local o descargado del almacenamiento.
             progress_callback: Función para reportar progreso (recibe porcentaje)
         
         Returns:
@@ -302,42 +302,40 @@ class OpenCVMotionDetector:
             logger.debug(f"Error en optical flow validation: {e}")
             return True  # En caso de error, aceptar el movimiento
     
-    def download_from_gcs(self, gcs_path: str) -> Optional[str]:
+    def download_from_storage(self, storage_path: str) -> Optional[str]:
         """
-        Descarga un video de GCS a archivo temporal
+        Descarga un video del almacenamiento local a archivo temporal
         
         Args:
-            gcs_path: Ruta GCS (gs://bucket/path)
+            storage_path: Ruta s3://bucket/path, file://path o clave de objeto.
         
         Returns:
             Ruta del archivo temporal o None si falla
         """
         try:
-            from google.cloud import storage
-            
-            # Parsear GCS path
-            if not gcs_path.startswith("gs://"):
-                return None
-            
-            path_parts = gcs_path.replace("gs://", "").split("/", 1)
-            if len(path_parts) != 2:
-                return None
-            
-            bucket_name, blob_name = path_parts
+            blob_name = storage_path
+            if "://" in storage_path:
+                scheme, remainder = storage_path.split("://", 1)
+                if scheme == "file":
+                    return remainder if os.path.exists(remainder) else None
+                blob_name = remainder.split("/", 1)[1] if "/" in remainder else remainder
             
             # Descargar a archivo temporal
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(blob_name)
-            
             # Crear archivo temporal
             suffix = os.path.splitext(blob_name)[1] or ".mp4"
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             temp_path = temp_file.name
             temp_file.close()
             
-            logger.info(f"📥 Descargando video de GCS: {gcs_path}")
-            blob.download_to_filename(temp_path)
+            logger.info(f"📥 Descargando video del almacenamiento: {storage_path}")
+            from infrastructure.dependencies import get_storage_adapter
+            storage = get_storage_adapter()
+            if not storage or not storage.is_available():
+                return None
+            if hasattr(storage, "descargar_archivo"):
+                storage.descargar_archivo(blob_name, temp_path)
+            else:
+                storage.download_file(blob_name, temp_path)
             
             file_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
             logger.info(f"✅ Video descargado: {file_size_mb:.1f} MB")
@@ -345,7 +343,7 @@ class OpenCVMotionDetector:
             return temp_path
         
         except Exception as e:
-            logger.error(f"❌ Error descargando de GCS: {e}")
+            logger.error(f"❌ Error descargando del almacenamiento: {e}")
             return None
     
     def cleanup_temp_file(self, temp_path: str):

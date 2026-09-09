@@ -170,62 +170,60 @@ def temporary_frames(video_clip_path: str, num_frames: int = 5):
 
 
 @contextmanager
-def temporary_download(gcs_uri: str, suffix: str = '.mp4'):
+def temporary_download(storage_uri: str, suffix: str = '.mp4'):
     """
-    Context manager para descargar archivo de GCS temporalmente
+    Context manager para descargar archivo de almacenamiento temporalmente
     
     Args:
-        gcs_uri: URI de GCS (gs://bucket/path)
+        storage_uri: URI del archivo (s3://bucket/path, file://path, o bucket/key)
         suffix: Extensión del archivo
     
     Yields:
         str: Ruta local del archivo descargado
-    
-    Example:
-        with temporary_download('gs://bucket/video.mp4') as local_path:
-            process_video(local_path)
-        # archivo local se elimina automáticamente aquí
     """
     temp_file = None
     try:
-        # Crear archivo temporal
         fd, temp_file = tempfile.mkstemp(suffix=suffix, prefix='download_')
         os.close(fd)
         
-        # Descargar de GCS
-        from infrastructure.adapters.gcp_storage import GCPStorageAdapter
-        from config.gcp_config import GCPConfig
+        from infrastructure.dependencies import get_storage_adapter
+        storage = get_storage_adapter()
         
-        storage = GCPStorageAdapter(GCPConfig())
+        if not storage or not storage.is_available():
+            raise RuntimeError("Storage no disponible")
         
-        # Parsear gs://bucket/path
-        if not gcs_uri.startswith('gs://'):
-            raise ValueError(f"URI inválida: {gcs_uri}")
+        blob_name = storage_uri
+        if "://" in storage_uri:
+            parts = storage_uri.split("://", 1)[1]
+            if "/" in parts:
+                blob_name = parts.split("/", 1)[1]
         
-        parts = gcs_uri[5:].split('/', 1)
-        bucket_name = parts[0]
-        blob_name = parts[1]
+        logger.info(f"Descargando {storage_uri} a {temp_file}...")
         
-        logger.info(f"⬇️  Descargando {gcs_uri} a {temp_file}...")
-        storage.download_file(bucket_name, blob_name, temp_file)
+        if hasattr(storage, '_get_client'):
+            storage._get_client().download_file(storage.bucket, blob_name, temp_file)
+        elif hasattr(storage, 'descargar_archivo'):
+            storage.descargar_archivo(blob_name, temp_file)
+        else:
+            import shutil
+            from pathlib import Path
+            shutil.copy2(str(Path(storage.base_dir) / blob_name), temp_file)
         
-        # Verificar que el archivo existe y tiene contenido
         if not os.path.exists(temp_file):
-            raise RuntimeError(f"No se pudo descargar {gcs_uri}")
+            raise RuntimeError(f"No se pudo descargar {storage_uri}")
         
         file_size = os.path.getsize(temp_file)
-        logger.info(f"✅ Descargado: {file_size / 1024 / 1024:.1f} MB")
+        logger.info(f"Descargado: {file_size / 1024 / 1024:.1f} MB")
         
         yield temp_file
         
     finally:
-        # Cleanup garantizado
         if temp_file and os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
-                logger.debug(f"🧹 Descarga temporal eliminada: {temp_file}")
+                logger.debug(f"Descarga temporal eliminada: {temp_file}")
             except Exception as e:
-                logger.warning(f"⚠️ No se pudo eliminar descarga temporal: {e}")
+                logger.warning(f"No se pudo eliminar descarga temporal: {e}")
 
 
 class TempFileTracker:

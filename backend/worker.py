@@ -51,6 +51,45 @@ def process_video_job(video_id: str):
         raise  # Re-raise para que RQ lo marque como failed
 
 
+def process_contextual_security_analysis(analysis_id: str, video_id: str, contexto: str, modo: str):
+    """Process a contextual security analysis and persist its terminal state."""
+    from infrastructure.db.models import SecurityAnalysisModel
+    from infrastructure.db.session import SessionLocal
+    from use_cases.security_video_processor import SecurityVideoProcessor
+
+    clear_request_context()
+    set_request_id(f"job-context-security-{analysis_id[:12]}")
+    db = SessionLocal()
+    try:
+        processor = SecurityVideoProcessor()
+        resultado = processor.process_with_context(video_id, contexto, modo)
+        if not isinstance(resultado, dict) or resultado.get("estado") == "error":
+            raise RuntimeError((resultado or {}).get("error", "El análisis contextual falló"))
+
+        analysis = db.get(SecurityAnalysisModel, analysis_id)
+        if not analysis:
+            raise ValueError(f"Análisis no encontrado: {analysis_id}")
+        analysis.estado = resultado.get("estado", "completado")
+        analysis.resultado = resultado
+        db.commit()
+        logger.info("✅ Worker completó análisis contextual: %s", analysis_id)
+        return {"success": True, "analysis_id": analysis_id}
+    except Exception as exc:
+        db.rollback()
+        try:
+            analysis = db.get(SecurityAnalysisModel, analysis_id)
+            if analysis:
+                analysis.estado = "error"
+                analysis.resultado = {"error": str(exc)}
+                db.commit()
+        except Exception:
+            db.rollback()
+        logger.error("❌ Worker falló análisis contextual %s: %s", analysis_id, exc, exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
 def process_operational_video(analysis_id: str):
     """
     Función wrapper para procesar análisis operativo en el worker.

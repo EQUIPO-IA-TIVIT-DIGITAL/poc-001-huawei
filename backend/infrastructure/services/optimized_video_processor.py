@@ -12,7 +12,6 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 import tempfile
 import logging
-from google.cloud import storage
 
 from .motion_detector import MotionDetector, MotionSegment
 
@@ -120,32 +119,27 @@ class OptimizedVideoProcessor:
             sample_rate=self.frame_skip_rate
         )
     
-    def download_from_gcs(
+    def download_from_storage(
         self,
-        gcs_uri: str,
+        storage_uri: str,
         local_path: Optional[str] = None
     ) -> str:
         """
-        Descarga video desde GCS
-        
+        Descarga video desde el almacenamiento local (MinIO/filesystem).
+
+        Acepta URIs s3://bucket/key, file:///ruta y gs://bucket/key heredados.
+        o keys/rutas desnudas.
+
         Args:
-            gcs_uri: URI de GCS (gs://bucket/path)
+            storage_uri: URI del archivo
             local_path: Ruta local (si None, usa temporal)
             
         Returns:
             Ruta local del video descargado
         """
-        # Parsear URI de GCS
-        if not gcs_uri.startswith('gs://'):
-            raise ValueError(f"URI inválida: {gcs_uri}")
-            
-        parts = gcs_uri[5:].split('/', 1)
-        bucket_name = parts[0]
-        blob_name = parts[1] if len(parts) > 1 else ''
-        
         # Crear path local si no se especificó
         if local_path is None:
-            suffix = Path(blob_name).suffix or '.mp4'
+            suffix = Path(storage_uri).suffix or '.mp4'
             temp_file = tempfile.NamedTemporaryFile(
                 delete=False,
                 suffix=suffix,
@@ -153,30 +147,43 @@ class OptimizedVideoProcessor:
             )
             local_path = temp_file.name
             temp_file.close()
-            
-        # Descargar
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        
-        logger.info(f"📥 Descargando {gcs_uri} → {local_path}")
-        
-        # Log file size before download
-        blob_size = blob.size
-        if blob_size:
-            size_mb = blob_size / (1024 * 1024)
-            logger.info(f"   📦 Tamaño del archivo: {size_mb:.1f} MB")
-        
+
+        blob_name = storage_uri
+        if "://" in storage_uri:
+            scheme, rest = storage_uri.split("://", 1)
+            if scheme == "file":
+                import shutil
+                shutil.copy2(rest, local_path)
+                logger.info(f"✅ Descarga completada (file): {local_path}")
+                return local_path
+            if "/" in rest:
+                blob_name = rest.split("/", 1)[1]
+            else:
+                blob_name = rest
+
+        logger.info(f"📥 Descargando {storage_uri} → {local_path}")
+
         import time as _dl_time
-        dl_start = _dl_time.time()
-        blob.download_to_filename(local_path)
-        dl_elapsed = _dl_time.time() - dl_start
-        
+        if blob_name.startswith('/') and os.path.exists(blob_name):
+            import shutil
+            shutil.copy2(blob_name, local_path)
+        else:
+            from infrastructure.dependencies import get_storage_adapter
+            storage = get_storage_adapter()
+            if not storage or not storage.is_available():
+                raise RuntimeError("Storage no disponible")
+            dl_start = _dl_time.time()
+            if hasattr(storage, 'descargar_archivo'):
+                storage.descargar_archivo(blob_name, local_path)
+            else:
+                storage.download_file(blob_name, local_path)
+            dl_elapsed = _dl_time.time() - dl_start
+
         local_size = os.path.getsize(local_path) / (1024 * 1024) if os.path.exists(local_path) else 0
-        speed = local_size / max(dl_elapsed, 0.1)
+        speed = local_size / max(_dl_time.time() - (locals().get('dl_start', _dl_time.time())), 0.1)
         logger.info(f"✅ Descarga completada: {local_path}")
-        logger.info(f"   📊 {local_size:.1f} MB en {dl_elapsed:.1f}s ({speed:.1f} MB/s)")
-        
+        logger.info(f"   📊 {local_size:.1f} MB ({speed:.1f} MB/s)")
+
         return local_path
     
     def create_clip(

@@ -1,6 +1,6 @@
 """
 Redis Cache Service para CU002
-Proporciona caching de queries frecuentes para reducir carga en Cloud SQL/Firestore
+Proporciona caching de queries frecuentes para reducir carga en la base de datos
 """
 import json
 import os

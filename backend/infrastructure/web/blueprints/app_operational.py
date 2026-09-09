@@ -37,7 +37,7 @@ from infrastructure.web.auth_decorators import api_socio_requerido
 from infrastructure.repositories.operational_analysis_repository import OperationalAnalysisRepository
 from infrastructure.services.resumable_upload_service import ResumableUploadService
 from infrastructure.services.multipart_upload_service import MultipartUploadService
-from infrastructure.adapters.gcp_storage import CloudStorageAdapter
+from infrastructure.dependencies import get_storage_adapter
 from infrastructure.services.log_utils import sanitize_context_for_log as _sanitize_context_for_log
 from domain.entities import (
     OperationalAnalysis, EstadoOperationalAnalysis, OPERATIONAL_ANALYSIS_TYPES,
@@ -342,7 +342,7 @@ def iniciar_upload():
             nombre_camara=nombre_camara,
             ubicacion=ubicacion,
             video_filename=data["filename"],
-            video_gcs_url=upload_data["gcs_path"],
+            video_url=upload_data["storage_path"],
             estado=EstadoOperationalAnalysis.PENDING,
             created_at=datetime.utcnow().isoformat(),
         )
@@ -350,19 +350,19 @@ def iniciar_upload():
         try:
             _get_operational_repo().guardar_analisis(analysis)
             elapsed_ms = (time.perf_counter() - request_start) * 1000
-            logger.info(f"[{vid}] ✅ Análisis registrado en Firestore [{elapsed_ms:.0f}ms]")
+            logger.info(f"[{vid}] ✅ Análisis registrado en la base de datos [{elapsed_ms:.0f}ms]")
         except Exception as save_error:
-            logger.error(f"[{vid}] ❌ Error guardando análisis en Firestore: {save_error}", exc_info=True)
+            logger.error(f"[{vid}] ❌ Error guardando análisis en la base de datos: {save_error}", exc_info=True)
             return jsonify({
                 "success": False,
-                "error": "No se pudo guardar el análisis. Verifica la configuración de Firestore."
+                "error": "No se pudo guardar el análisis. Verifica la configuración de la base de datos."
             }), 500
 
         return jsonify({
             "success": True,
             "analysis_id": analysis_id,
             "upload_url": upload_data["upload_url"],
-            "gcs_path": upload_data["gcs_path"],
+            "storage_path": upload_data["storage_path"],
             "bucket": upload_data["bucket"],
             "blob_name": upload_data["blob_name"],
             "expiration_hours": upload_data["expiration_hours"],
@@ -439,7 +439,7 @@ def subir_video_stream():
         mb_size = file_size / (1024 * 1024) if file_size else 0
         logger.info(f"[{vid}]    Archivo: {file.filename} ({mb_size:.1f} MB)")
 
-        # Upload a GCS
+        # Upload al almacenamiento.
         USE_MULTIPART_THRESHOLD = 100 * 1024 * 1024
         use_multipart = file_size and file_size > USE_MULTIPART_THRESHOLD
 
@@ -447,7 +447,7 @@ def subir_video_stream():
             logger.info(f"[{vid}]    📤 MULTIPART UPLOAD ({mb_size:.1f} MB)")
             result = _get_multipart_service().subir_archivo_multipart(
                 file_stream=file.stream,
-                gcs_path=analysis.video_gcs_url,
+                storage_path=analysis.video_url,
                 content_type=file.content_type or "video/mp4",
                 chunk_size=50 * 1024 * 1024,
                 max_workers=5,
@@ -457,7 +457,7 @@ def subir_video_stream():
             logger.info(f"[{vid}]    📤 Upload simple ({mb_size:.1f} MB)")
             bytes_uploaded = _get_upload_service().subir_archivo_directo(
                 file_stream=file.stream,
-                gcs_path=analysis.video_gcs_url,
+                storage_path=analysis.video_url,
                 content_type=file.content_type or "video/mp4",
             )
 
@@ -511,15 +511,15 @@ def completar_upload():
             return jsonify({"success": False, "error": "No tienes permiso para este análisis"}), 403
 
         # Verificar que el upload esté completo
-        if analysis.video_gcs_url:
-            status_ok = _get_upload_service().verificar_upload_completo(analysis.video_gcs_url)
+        if analysis.video_url:
+            status_ok = _get_upload_service().verificar_upload_completo(analysis.video_url)
             if not status_ok:
                 return jsonify({"success": False, "error": "Archivo no subido completamente"}), 400
 
-        logger.info(f"[{vid}]    ✅ Archivo verificado en GCS")
+        logger.info(f"[{vid}]    ✅ Archivo verificado en el almacenamiento")
 
         # Obtener metadata
-        metadata = _get_upload_service().obtener_metadata_archivo(analysis.video_gcs_url)
+        metadata = _get_upload_service().obtener_metadata_archivo(analysis.video_url)
         if metadata:
             analysis.video_duration = metadata.get('duracion_segundos', 0)
             analysis.video_size_mb = metadata.get('size_bytes', 0) / (1024 * 1024)
@@ -767,7 +767,7 @@ def obtener_eventos(analysis_id):
 def obtener_video_url(analysis_id):
     """
     Genera una URL firmada (signed URL) temporal para reproducir el video
-    desde GCS directamente en el navegador.
+    desde el almacenamiento directamente en el navegador.
     La URL expira en 60 minutos.
     """
     vid = analysis_id[:8]
@@ -780,11 +780,11 @@ def obtener_video_url(analysis_id):
         if analysis.usuario != current_user:
             return jsonify({"success": False, "error": "No tienes permiso"}), 403
 
-        if not analysis.video_gcs_url:
-            logger.warning(f"[{vid}] ⚠️ video_gcs_url está vacío")
+        if not analysis.video_url:
+            logger.warning(f"[{vid}] ⚠️ video_url está vacío")
             return jsonify({"success": False, "error": "No hay video asociado"}), 404
 
-        logger.info(f"[{vid}] 📹 video_gcs_url: {analysis.video_gcs_url}")
+        logger.info(f"[{vid}] 📹 video_url: {analysis.video_url}")
 
         # Intentar cache
         cache = _get_redis_cache()
@@ -795,9 +795,9 @@ def obtener_video_url(analysis_id):
                 logger.info(f"[{vid}] ✅ URL desde cache")
                 return jsonify({"success": True, "url": cached_url}), 200
 
-        storage_adapter = CloudStorageAdapter()
-        signed_url = storage_adapter.generate_signed_url_from_gcs_uri(
-            analysis.video_gcs_url, expiration_minutes=60
+        storage_adapter = get_storage_adapter()
+        signed_url = storage_adapter.generate_signed_url_from_storage_uri(
+            analysis.video_url, expiration_minutes=60
         )
 
         if not signed_url:
@@ -821,8 +821,8 @@ def obtener_video_url(analysis_id):
 @api_socio_requerido
 def stream_video(analysis_id):
     """
-    Redirects to a short-lived GCS signed URL for video playback.
-    The browser follows the redirect directly to GCS (fast, no buffering proxy).
+    Redirects to a short-lived storage signed URL for video playback.
+    The browser follows the redirect directly to storage (fast, no buffering proxy).
     """
     vid = analysis_id[:8]
     try:
@@ -834,17 +834,16 @@ def stream_video(analysis_id):
         if analysis.usuario != current_user:
             return jsonify({"error": "Sin permiso"}), 403
 
-        if not analysis.video_gcs_url:
+        if not analysis.video_url:
             return jsonify({"error": "No hay video asociado"}), 404
 
-        from infrastructure.adapters.gcp_storage import CloudStorageAdapter
         from flask import redirect
-        storage = CloudStorageAdapter()
+        storage = get_storage_adapter()
         if not storage.is_available():
             return jsonify({"error": "Almacenamiento no disponible"}), 503
 
-        signed_url = storage.generate_signed_url_from_gcs_uri(
-            analysis.video_gcs_url, expiration_minutes=60
+        signed_url = storage.generate_signed_url_from_storage_uri(
+            analysis.video_url, expiration_minutes=60
         )
         if not signed_url:
             return jsonify({"error": "No se pudo generar URL"}), 500
@@ -859,9 +858,7 @@ def stream_video(analysis_id):
 # ─── Helper interno ───────────────────────────────────────────────────────────
 def _resolve_frame_urls(events: list, analysis_id: str, base_url: str) -> list:
     """
-    Convierte gs:// URIs almacenadas en frame_urls al endpoint proxy del backend.
-    Las ADC user credentials no pueden firmar URLs (no tienen private key),
-    por lo que se sirven los frames vía proxy autenticado.
+    Convierte rutas de objetos S3 en frame_urls al endpoint proxy del backend.
     """
     for event in events:
         raw = event.get("frame_urls") or []
@@ -869,9 +866,9 @@ def _resolve_frame_urls(events: list, analysis_id: str, base_url: str) -> list:
             continue
         resolved = []
         for uri in raw:
-            if uri.startswith("gs://"):
-                # gs://bucket/blob_path → {base_url}/api/operational/analyses/{id}/frames/{blob_path}
-                blob_path = uri.split("/", 3)[-1]  # quita "gs://bucket/"
+            if uri.startswith("s3://"):
+                # s3://bucket/blob_path → authenticated backend proxy.
+                blob_path = uri.split("/", 3)[-1]
                 resolved.append(f"{base_url}api/operational/analyses/{analysis_id}/frames/{blob_path}")
             else:
                 resolved.append(uri)
@@ -883,9 +880,8 @@ def _resolve_frame_urls(events: list, analysis_id: str, base_url: str) -> list:
 @api_socio_requerido
 def proxy_frame(analysis_id, blob_path):
     """
-    Proxy autenticado para servir frames almacenados en GCS.
-    Las ADC user credentials no soportan signed URLs, por lo que el backend
-    descarga el blob y lo sirve directamente al cliente autenticado.
+    Proxy autenticado para servir frames almacenados en el almacenamiento.
+    El backend descarga el objeto y lo sirve directamente al cliente autenticado.
     """
     vid = analysis_id[:8]
     try:
@@ -903,14 +899,24 @@ def proxy_frame(analysis_id, blob_path):
             logger.warning(f"[{vid}] ⚠️ Intento de acceso a blob fuera de prefijo: {blob_path}")
             return jsonify({"error": "Ruta inválida"}), 400
 
-        from infrastructure.adapters.gcp_storage import CloudStorageAdapter
         from flask import Response
-        storage = CloudStorageAdapter()
+        import tempfile
+        from pathlib import Path
+        storage = get_storage_adapter()
         if not storage.is_available():
             return jsonify({"error": "Almacenamiento no disponible"}), 503
 
-        blob = storage.bucket.blob(blob_path)
-        image_bytes = blob.download_as_bytes()
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            storage.descargar_archivo(blob_path, tmp_path)
+            image_bytes = Path(tmp_path).read_bytes()
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         return Response(
             image_bytes,
@@ -1292,7 +1298,7 @@ def estimar_tiempo():
 def reprocesar_analisis(analysis_id):
     """
     Re-procesa un análisis que falló (estado 'error').
-    Reutiliza el video ya subido en GCS.
+    Reutiliza el video ya subido al almacenamiento.
     """
     vid = analysis_id[:8]
     request_start = time.perf_counter()
@@ -1314,13 +1320,13 @@ def reprocesar_analisis(analysis_id):
                 "error": f"Solo se pueden reprocesar análisis en error. Estado actual: {analysis.estado.value}"
             }), 400
 
-        # Verificar que el video sigue existiendo en GCS
-        if analysis.video_gcs_url:
-            video_exists = _get_upload_service().verificar_upload_completo(analysis.video_gcs_url)
+        # Verificar que el video sigue existiendo en el almacenamiento.
+        if analysis.video_url:
+            video_exists = _get_upload_service().verificar_upload_completo(analysis.video_url)
             if not video_exists:
                 return jsonify({
                     "success": False,
-                    "error": "El video ya no está disponible en GCS. Debes subir el video nuevamente."
+                    "error": "El video ya no está disponible en el almacenamiento. Debes subir el video nuevamente."
                 }), 400
 
         logger.info(f"[{vid}] 🔄 REPROCESANDO análisis operativo")

@@ -1,11 +1,11 @@
 # CU002 Local Offline 32B — 9 servicios (Postgres+MinIO+vLLM 32B) + observabilidad
 # Uso: cp .env.example .env && docker compose -f docker-compose.local.yml up -d --build
-# Modelos: pre-pull offline via scripts/pull_models.sh (Qwen2.5-VL-32B-AWQ, Qwen2.5-32B-AWQ, bge-m3, whisper turbo)
+# Modelos: pre-pull offline via backend/scripts/pull_models.sh (Qwen2.5-VL-32B-AWQ, Qwen2.5-32B-AWQ, bge-m3, whisper turbo)
 name: cu002-local
 
 services:
   postgres:
-    image: ankane/pgvector:v0.8.0-pg16
+    image: pgvector/pgvector:pg16
     container_name: cu002-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cu002}
@@ -26,6 +26,7 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:1.23.0
     container_name: cu002-pgbouncer
+    profiles: [pool]
     environment:
       DATABASE_URL: "postgres://${POSTGRES_USER:-cu002}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido}@postgres:5432/${POSTGRES_DB:-cu002}"
       POOL_MODE: transaction
@@ -63,11 +64,15 @@ services:
 
   minio-setup:
     image: minio/mc:RELEASE.2024-12-18T16-47-23Z
+    profiles: [setup]
     depends_on:
       minio: { condition: service_healthy }
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin-long-password-change-me} &&
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido} $${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido} &&
       mc mb -p local/cu002-videos 2>/dev/null || true &&
       mc mb -p local/cu002-thumbs 2>/dev/null || true &&
       mc ilm add --expiry-days 7 local/cu002-videos --prefix 'tmp/' 2>/dev/null || true &&
@@ -78,10 +83,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cu002-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD:-cu002-redis-secret}
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD requerido}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD requerido}
     volumes: [redis_data:/data]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD:-cu002-redis-secret} --no-auth-warning ping"]
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD:?REDIS_PASSWORD requerido} --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -187,19 +194,25 @@ services:
       - FLASK_ENV=${FLASK_ENV:-development}
       - APP_ENV=local
       - SECRET_KEY=${SECRET_KEY:?SECRET_KEY requerido}
-      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER:-cu002}:${POSTGRES_PASSWORD:-cu002-secret}@postgres:5432/${POSTGRES_DB:-cu002}
+      - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER:-cu002}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido}@postgres:5432/${POSTGRES_DB:-cu002}
       - PGVECTOR_ENABLED=true
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-cu002-redis-secret}@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD requerido}@redis:6379/0
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=${S3_BUCKET:-cu002-videos}
-      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin-long-password-change-me}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}
       - S3_REGION=us-east-1
       - S3_USE_SSL=false
       - AI_PROVIDER=${AI_PROVIDER:-hybrid}
+      - AI_API_PROVIDER=${AI_API_PROVIDER:-openrouter}
       - AI_API_BASE_URL=${AI_API_BASE_URL:-}
       - AI_API_KEY=${AI_API_KEY:-}
+      - AI_API_TEXT_MODEL=${AI_API_TEXT_MODEL:-qwen/qwen-2.5-72b-instruct}
+      - AI_API_VISION_MODEL=${AI_API_VISION_MODEL:-qwen/qwen-2.5-vl-72b-instruct}
+      - AI_API_EMBEDDING_MODEL=${AI_API_EMBEDDING_MODEL:-}
+      - OPENROUTER_SITE_URL=${OPENROUTER_SITE_URL:-http://localhost:5173}
+      - OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-TIVIT CU002}
       - AI_LOCAL_BASE_URL=http://vllm-vision:8000/v1
       - AI_LOCAL_MODEL=Qwen/Qwen2.5-VL-32B-Instruct-AWQ
       - AI_LOCAL_TEXT_BASE_URL=http://vllm-text:8000/v1
@@ -230,7 +243,7 @@ services:
   worker:
     build: { context: ./backend, dockerfile: Dockerfile.worker }
     container_name: cu002-worker
-    image: cu002-backend:local
+    image: cu002-worker:local
     command: python worker.py
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import redis; r=redis.Redis.from_url('redis://:'+__import__('os').environ.get('REDIS_PASSWORD','')+'@redis:6379/0'); r.ping()\" || exit 1"]
@@ -240,13 +253,22 @@ services:
     environment:
       - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER:-cu002}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido}@postgres:5432/${POSTGRES_DB:-cu002}
       - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD requerido}@redis:6379/0
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD requerido}
       - STORAGE_BACKEND=${STORAGE_BACKEND:-minio}
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=${S3_BUCKET:-cu002-videos}
-      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin-long-password-change-me}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:?MINIO_ROOT_USER requerido}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD requerido}
       - S3_REGION=us-east-1
       - AI_PROVIDER=${AI_PROVIDER:-hybrid}
+      - AI_API_PROVIDER=${AI_API_PROVIDER:-openrouter}
+      - AI_API_BASE_URL=${AI_API_BASE_URL:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_API_TEXT_MODEL=${AI_API_TEXT_MODEL:-qwen/qwen-2.5-72b-instruct}
+      - AI_API_VISION_MODEL=${AI_API_VISION_MODEL:-qwen/qwen-2.5-vl-72b-instruct}
+      - AI_API_EMBEDDING_MODEL=${AI_API_EMBEDDING_MODEL:-}
+      - OPENROUTER_SITE_URL=${OPENROUTER_SITE_URL:-http://localhost:5173}
+      - OPENROUTER_APP_NAME=${OPENROUTER_APP_NAME:-TIVIT CU002}
       - AI_LOCAL_BASE_URL=http://vllm-vision:8000/v1
       - AI_LOCAL_TEXT_BASE_URL=http://vllm-text:8000/v1
       - WHISPER_BASE_URL=http://whisper:9000
