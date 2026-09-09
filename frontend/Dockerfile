@@ -22,7 +22,10 @@ RUN npm run build
 # ================================
 # Stage 2: Production (nginx)
 # ================================
-FROM nginx:1.27-alpine
+FROM nginx:stable-alpine
+
+# Actualizar paquetes Alpine a las ultimas versiones parcheadas (reduce CVEs)
+RUN apk upgrade --no-cache
 
 # Create non-root user
 RUN addgroup -g 1001 -S appgroup && \

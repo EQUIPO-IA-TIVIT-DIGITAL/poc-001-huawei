@@ -1,9 +1,9 @@
-FROM python:3.11.14-slim-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg=7:5.1* libmagic1 && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libmagic1 && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1000 -s /bin/bash appuser
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir --upgrade pip setuptools wheel msgpack
 COPY --chown=appuser:appuser . .
 RUN mkdir -p /app/uploads /app/thumbnails && chown -R appuser:appuser /app
 ENV PYTHONUNBUFFERED=1

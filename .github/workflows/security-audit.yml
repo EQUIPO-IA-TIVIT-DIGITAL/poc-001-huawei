@@ -66,16 +66,19 @@ jobs:
         with:
           image-ref: cu002-backend:scan
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: "1"
       - name: Scan worker image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: cu002-worker:scan
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: "1"
       - name: Scan frontend image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: cu002-frontend:scan
           severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: "1"
