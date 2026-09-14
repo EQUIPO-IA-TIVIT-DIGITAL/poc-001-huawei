@@ -43,7 +43,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
     container_name: cu002-minio
     command: server /data --console-address ":9001"
     environment:
@@ -63,7 +63,7 @@ services:
     restart: unless-stopped
 
   minio-setup:
-    image: minio/mc:RELEASE.2024-12-18T16-47-23Z
+    image: quay.io/minio/mc:latest
     profiles: [setup]
     depends_on:
       minio: { condition: service_healthy }
@@ -290,7 +290,9 @@ services:
     depends_on:
       backend: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ | grep -q '<title'"]
+      # 127.0.0.1 en vez de localhost: en Alpine localhost puede resolver a ::1
+      # (IPv6) y nginx solo escucha en IPv4, lo que marcaba el contenedor unhealthy.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ | grep -q '<title'"]
       interval: 20s
       timeout: 5s
       retries: 3
