@@ -244,6 +244,25 @@ def retry_dead_letter_video(video_id: str, priority: int = 0) -> Optional[str]:
     return job_id
 
 
+def _mask_redis_url(url: str) -> str:
+    """Enmascara la contraseña en la URL de Redis para logging seguro."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+        if parts.password is None:
+            return url
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        if parts.username:
+            netloc = f"{parts.username}:***@{netloc}"
+        elif parts.password is not None:
+            netloc = f":***@{netloc}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return "redis://<masked>"
+
+
 def get_redis_connection():
     """Obtiene conexión a Redis (singleton)"""
     global _redis_conn
@@ -254,7 +273,7 @@ def get_redis_connection():
             _redis_conn = Redis.from_url(redis_url, socket_connect_timeout=3, socket_timeout=3)
             # Test de conexión
             _redis_conn.ping()
-            logger.info(f"✅ Redis conectado: {redis_url}")
+            logger.info("✅ Redis conectado: %s", _mask_redis_url(redis_url))
         except ImportError:
             logger.error("❌ redis-py no instalado. Instalar con: pip install redis")
             raise
