@@ -260,10 +260,11 @@ def create_app():
         if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
             return None
 
-        # Excluir rutas públicas que no requieren CSRF
+        # Endpoints públicos de autenticación: los formularios SSR no envían
+        # X-Requested-With, pero la validación de Origin/Referer SÍ aplica igual
+        # (un cross-origin de un sitio malicioso debe seguir siendo rechazado).
         public_endpoints = ["auth.login", "auth.logout", "auth.registro_socio"]
-        if request.endpoint in public_endpoints:
-            return None
+        is_public_auth = request.endpoint in public_endpoints
 
         # Permitir workers internos autenticados por token compartido
         if request.path in ("/api/security/process-worker", "/api/security/index-worker"):
@@ -296,8 +297,10 @@ def create_app():
         elif request_origin not in trusted:
             return jsonify({"error": "Origen no permitido"}), 403
 
-        # Para peticiones JSON (API), verificar header X-Requested-With
-        if request.is_json:
+        # Para peticiones JSON (API), verificar header X-Requested-With.
+        # Los endpoints públicos de auth quedan exentos de ESTE header (formularios
+        # SSR), no de la validación de origen de arriba.
+        if request.is_json and not is_public_auth:
             requested_with = request.headers.get("X-Requested-With", "")
             if requested_with != "XMLHttpRequest":
                 return jsonify({"error": "Petición inválida - header CSRF requerido"}), 403
