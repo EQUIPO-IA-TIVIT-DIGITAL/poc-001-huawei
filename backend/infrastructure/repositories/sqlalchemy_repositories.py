@@ -78,7 +78,6 @@ class SQLAlchemyVideoRepository:
     def delete_video(self, id: str) -> bool:
         return self.eliminar(id)
 
-    # Métodos legacy (video_repository.VideoRepositoryFirestore)
     def guardar(self, video: Video) -> Video:
         from sqlalchemy import select
         db = SessionLocal()
@@ -368,8 +367,4 @@ class SQLAlchemyUserRepository:
             db.close()
 
 
-# Aliases compat con imports legacy
-UsuarioRepositoryMemory = SQLAlchemyUserRepository
-VideoRepositoryMemory = SQLAlchemyVideoRepository
-VideoRepositoryFirestore = SQLAlchemyVideoRepository
-UsuarioRepositoryFirestore = SQLAlchemyUserRepository
+

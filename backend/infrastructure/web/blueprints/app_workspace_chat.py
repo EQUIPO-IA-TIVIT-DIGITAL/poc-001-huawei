@@ -9,7 +9,7 @@ import os
 import re
 from functools import wraps
 
-from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
+from infrastructure.repositories.workspace_repository import WorkspaceRepository
 from infrastructure.services.logging_service import get_logger
 from infrastructure.services.ai_cost_control import AIUsageTracker
 from infrastructure.dependencies import get_ai_adapter
@@ -72,7 +72,7 @@ def validate_workspace_context(workspace_id):
                 'usage': AIUsageTracker.get_user_usage_today(usuario)
             }), 429
         
-        workspace_repo = WorkspaceRepositoryFirestore()
+        workspace_repo = WorkspaceRepository()
         workspace = workspace_repo.obtener_por_id(workspace_id)
         
         if not workspace or workspace.usuario != usuario:
@@ -283,7 +283,7 @@ def improve_workspace_context(workspace_id):
         data = request.get_json()
         respuestas = data.get('respuestas', [])  # Lista de respuestas del usuario
         
-        workspace_repo = WorkspaceRepositoryFirestore()
+        workspace_repo = WorkspaceRepository()
         workspace = workspace_repo.obtener_por_id(workspace_id)
         
         if not workspace or workspace.usuario != usuario:
@@ -421,7 +421,7 @@ def chat_conversation(workspace_id):
         mensaje_usuario = data.get('mensaje', '')
         historial = data.get('historial', [])
         
-        workspace_repo = WorkspaceRepositoryFirestore()
+        workspace_repo = WorkspaceRepository()
         workspace = workspace_repo.obtener_por_id(workspace_id)
         
         if not workspace or workspace.usuario != usuario:

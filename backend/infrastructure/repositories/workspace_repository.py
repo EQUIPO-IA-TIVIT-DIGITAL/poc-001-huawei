@@ -184,7 +184,7 @@ def _upsert_workspace(workspace: Workspace) -> Workspace:
         db.close()
 
 
-class WorkspaceRepositoryFirestore:
+class WorkspaceRepository:
     """
     Repositorio de workspaces con persistencia en PostgreSQL (SQLAlchemy).
 
@@ -507,5 +507,4 @@ class WorkspaceRepositoryFirestore:
         return self.guardar(nuevo_workspace)
 
 
-# Alias para compatibilidad
-WorkspaceRepositoryMemory = WorkspaceRepositoryFirestore
+

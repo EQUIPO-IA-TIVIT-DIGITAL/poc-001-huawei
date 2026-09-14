@@ -8,7 +8,7 @@ import uuid
 import re
 from datetime import datetime
 
-from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
+from infrastructure.repositories.workspace_repository import WorkspaceRepository
 from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
 from infrastructure.services.workspace_stats_service import recalculate_workspace_stats
 from infrastructure.services.workspace_audit import WorkspaceAuditLogger
@@ -56,7 +56,7 @@ _video_repo = None
 def _get_workspace_repo():
     global _workspace_repo
     if _workspace_repo is None:
-        _workspace_repo = WorkspaceRepositoryFirestore()
+        _workspace_repo = WorkspaceRepository()
     return _workspace_repo
 
 def _get_video_repo():

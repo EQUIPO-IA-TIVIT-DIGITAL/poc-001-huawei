@@ -252,8 +252,8 @@ class ProcesarVideoUseCase:
 
         if hasattr(video, "workspace_id") and video.workspace_id:
             try:
-                from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
-                workspace_repo = WorkspaceRepositoryFirestore()
+                from infrastructure.repositories.workspace_repository import WorkspaceRepository
+                workspace_repo = WorkspaceRepository()
                 workspace = workspace_repo.obtener_por_id(video.workspace_id)
                 if workspace:
                     partes_contexto = []

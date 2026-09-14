@@ -1,4 +1,5 @@
 import importlib
+import sys
 
 from config import app_config
 from config.app_config import AppConfig
@@ -18,6 +19,13 @@ def test_api_provider_requires_commercial_api_config(monkeypatch):
     monkeypatch.setenv("AI_PROVIDER", "api")
     monkeypatch.delenv("AI_API_BASE_URL", raising=False)
     monkeypatch.delenv("AI_API_KEY", raising=False)
+    # Neutralizar dotenv a nivel de sys.modules: el reload de app_config re-ejecuta
+    # "from dotenv import load_dotenv", lo que pisaría un patch sobre el atributo
+    # del módulo. Sustituyendo el módulo dotenv entero, el rebind carga el stub.
+    import types
+    stub_dotenv = types.ModuleType("dotenv")
+    stub_dotenv.load_dotenv = lambda *a, **k: False
+    monkeypatch.setitem(sys.modules, "dotenv", stub_dotenv)
 
     reloaded = importlib.reload(app_config)
     valid, errors = reloaded.AppConfig.validate_config()

@@ -34,7 +34,7 @@ from infrastructure.rate_limiter import (
     POLLING_LIMIT,
     VIDEO_DETAILS_LIMIT,
 )
-from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
+from infrastructure.repositories.workspace_repository import WorkspaceRepository
 from infrastructure.services.workspace_stats_service import recalculate_workspace_stats
 from use_cases.socio_video_service import SocioVideoService
 
@@ -549,9 +549,9 @@ def upload_video():
         
         # Si es "general", obtener o crear workspace General
         if workspace_id == "general":
-            from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
+            from infrastructure.repositories.workspace_repository import WorkspaceRepository
             from use_cases.socio_video_service import SocioVideoService
-            workspace_repo = WorkspaceRepositoryFirestore()
+            workspace_repo = WorkspaceRepository()
             workspace_general = workspace_repo.obtener_workspace_general(usuario)
             workspace_id = workspace_general.id
             print(f"📤 Upload: workspace_id (general) resuelto a = '{workspace_id}'")
@@ -921,7 +921,7 @@ def batch_upload_videos():
 
         # Resolver workspace general
         if workspace_id == "general":
-            workspace_repo = WorkspaceRepositoryFirestore()
+            workspace_repo = WorkspaceRepository()
             workspace_general = workspace_repo.obtener_workspace_general(usuario)
             workspace_id = workspace_general.id
 

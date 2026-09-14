@@ -90,8 +90,8 @@ class SocioVideoService:
             if ws_id:
                 workspace_ids_needed.add(ws_id)
         
-        from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
-        ws_repo = WorkspaceRepositoryFirestore()
+        from infrastructure.repositories.workspace_repository import WorkspaceRepository
+        ws_repo = WorkspaceRepository()
         for ws_id in workspace_ids_needed:
             try:
                 ws = ws_repo.obtener_por_id(ws_id)

@@ -5,7 +5,7 @@ import logging
 
 from domain.entities import EstadoVideo
 from infrastructure.dependencies import get_video_repository
-from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
+from infrastructure.repositories.workspace_repository import WorkspaceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def recalculate_workspace_stats(workspace_id: str, touch_activity: bool = True) 
         bool: True si se actualizó correctamente, False en caso contrario.
     """
     try:
-        workspace_repo = WorkspaceRepositoryFirestore()
+        workspace_repo = WorkspaceRepository()
         video_repo = get_video_repository()
 
         workspace = workspace_repo.obtener_por_id(workspace_id)
