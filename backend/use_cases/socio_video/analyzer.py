@@ -16,15 +16,17 @@ class VideoDeepAnalyzer:
 
     def _analizar_video_completo(
         self, storage_uri: str, video: Video, duracion: int,
-        contexto_workspace: str = "", metadata_workspace: dict = None
+        contexto_workspace: str = "", metadata_workspace: dict = None,
+        frames_base64: list[str] = None,
     ) -> Dict[str, Any]:
-        """Análisis con video completo desde GCS — Gemini procesa visual + audio nativamente."""
+        """Analiza el video usando frames; el adapter OpenAI-compat no recibe videos GCS."""
         result = self.gemini.analyze_video_clip_safety(
             storage_uri=storage_uri,
             descripcion=video.descripcion or "",
             duracion=duracion,
             contexto_workspace=contexto_workspace,
             metadata_workspace=metadata_workspace,
+            frames_base64=frames_base64,
         )
         if result and result.get('success'):
             analisis = result.get('analisis', {})
@@ -68,11 +70,18 @@ class VideoDeepAnalyzer:
 
         storage_uri = video.metadatos_ia.get("storage_uri") if hasattr(video, 'metadatos_ia') else None
         gemini_result = None
+        frames = None
+
+        if self.frame_extractor and self.frame_extractor.is_available():
+            try:
+                frames = self.frame_extractor.extract_frames(video_path, 5)
+            except Exception as exc:
+                logger.warning("No se pudieron extraer frames para análisis profundo: %s", exc)
 
         if storage_uri and self.gemini and self.gemini.is_available():
-            logger.info(f"🎬 Usando video completo GCS para análisis (audio + visual)")
+            logger.info("🎬 Analizando frames del video almacenado (visual)")
             gemini_result = self._analizar_video_completo(
-                storage_uri, video, duracion, contexto_workspace, metadata_workspace
+                storage_uri, video, duracion, contexto_workspace, metadata_workspace, frames
             )
 
         # Fallback a frames si el video completo no está disponible o falló

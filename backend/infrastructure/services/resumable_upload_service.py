@@ -72,6 +72,8 @@ class ResumableUploadService:
                 "upload_url": url,
                 "storage_path": f"s3://{bucket_name}/{blob_name}",
                 "blob_name": blob_name,
+                # Alias legacy usado por algunos blueprints de upload.
+                "bucket": bucket_name,
                 "storage_bucket": bucket_name,
                 "expiration_hours": expiration_hours,
                 "content_type": content_type,

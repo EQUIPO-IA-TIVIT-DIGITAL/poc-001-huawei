@@ -287,8 +287,19 @@ export default function AudioAnalysisDetail() {
 
   const copyTranscription = () => {
     if (analysis?.full_transcription) {
-      navigator.clipboard.writeText(analysis.full_transcription);
-      toast.success(t('audioDetail.copySuccess'));
+      const text = analysis.full_transcription;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      toast[copied ? 'success' : 'error'](
+        copied ? t('audioDetail.copySuccess') : t('audioDetail.copyFailed'),
+      );
     }
   };
 

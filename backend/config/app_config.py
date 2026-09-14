@@ -58,6 +58,7 @@ class AppConfig:
     AI_API_TEXT_MODEL: str = os.getenv("AI_API_TEXT_MODEL", AI_API_MODEL)
     AI_API_VISION_MODEL: str = os.getenv("AI_API_VISION_MODEL", AI_API_MODEL)
     AI_API_EMBEDDING_MODEL: Optional[str] = os.getenv("AI_API_EMBEDDING_MODEL")
+    AI_API_TRANSCRIPTION_MODEL: str = os.getenv("AI_API_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")
 
     OPENROUTER_SITE_URL: str = os.getenv("OPENROUTER_SITE_URL", "http://localhost:5173")
     OPENROUTER_APP_NAME: str = os.getenv("OPENROUTER_APP_NAME", "TIVIT CU002")

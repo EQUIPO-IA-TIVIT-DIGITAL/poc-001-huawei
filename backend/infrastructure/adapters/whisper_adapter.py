@@ -18,6 +18,9 @@ class WhisperAdapter:
         from config.app_config import AppConfig
         self.base_url = (base_url or AppConfig.WHISPER_BASE_URL).rstrip("/")
         self.model = model or AppConfig.WHISPER_MODEL
+        self.api_base_url = (AppConfig.AI_API_BASE_URL or "").rstrip("/")
+        self.api_key = AppConfig.AI_API_KEY or ""
+        self.api_model = AppConfig.AI_API_TRANSCRIPTION_MODEL
 
     def is_available(self) -> bool:
         try:
@@ -94,14 +97,81 @@ class WhisperAdapter:
                 segments = [{"start": 0.0, "end": 0.0, "text": str(j), "speaker": "SPEAKER_1"}]
             return {"success": True, "segments": segments, "text": " ".join(s["text"] for s in segments), "model": self.model}
         except Exception as e:
-            logger.error("Whisper transcribe error: %s", e)
-            return {"success": False, "segments": [], "text": "", "error": str(e)}
+            logger.warning("Whisper local no disponible, intentando transcripción API: %s", e)
+            api_result = self._transcribe_with_api(audio_path, language)
+            if api_result.get("success"):
+                return api_result
+            logger.error("Whisper/API transcribe error: %s", api_result.get("error", e))
+            return api_result
         finally:
             if to_clean and os.path.exists(to_clean):
                 try:
                     os.unlink(to_clean)
                 except Exception:
                     pass
+
+    def _transcribe_with_api(self, audio_path: str, language: str) -> dict:
+        """Usa la API OpenAI-compatible cuando Whisper local no está disponible."""
+        if not self.api_base_url or not self.api_key:
+            return {"success": False, "segments": [], "text": "", "error": "API de transcripción no configurada"}
+
+        try:
+            from openai import OpenAI
+            import glob
+
+            client = OpenAI(base_url=self.api_base_url, api_key=self.api_key, timeout=600)
+            segments = []
+            with tempfile.TemporaryDirectory(prefix="llmapi_audio_") as chunk_dir:
+                files = [audio_path]
+                if os.path.getsize(audio_path) > 24 * 1024 * 1024:
+                    pattern = os.path.join(chunk_dir, "chunk_%03d.wav")
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", audio_path, "-f", "segment",
+                         "-segment_time", "600", "-acodec", "pcm_s16le",
+                         "-ar", "16000", "-ac", "1", pattern],
+                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=300,
+                    )
+                    files = sorted(glob.glob(os.path.join(chunk_dir, "chunk_*.wav")))
+
+                text_parts = []
+                for index, chunk_path in enumerate(files):
+                    with open(chunk_path, "rb") as audio_file:
+                        response = client.audio.transcriptions.create(
+                            model=self.api_model,
+                            file=audio_file,
+                            language=language,
+                            # LLMAPI admite JSON para este modelo, pero no verbose_json.
+                            response_format="json",
+                        )
+                    chunk_text = getattr(response, "text", "") or ""
+                    if chunk_text.strip():
+                        text_parts.append(chunk_text.strip())
+                    offset = index * 600.0
+                    for segment in (getattr(response, "segments", None) or []):
+                        if isinstance(segment, dict):
+                            start = segment.get("start", 0)
+                            end = segment.get("end", start)
+                            segment_text = segment.get("text", "")
+                        else:
+                            start = getattr(segment, "start", 0)
+                            end = getattr(segment, "end", start)
+                            segment_text = getattr(segment, "text", "")
+                        if segment_text and str(segment_text).strip():
+                            segments.append({
+                                "start": float(start or 0) + offset,
+                                "end": float(end or start or 0) + offset,
+                                "text": str(segment_text).strip(),
+                                "speaker": "SPEAKER_1",
+                            })
+
+                text = " ".join(text_parts)
+                if not segments and text.strip():
+                    segments = [{"start": 0.0, "end": 0.0, "text": text.strip(), "speaker": "SPEAKER_1"}]
+
+            return {"success": bool(text.strip() or segments), "segments": segments, "text": text, "model": self.api_model}
+        except Exception as e:
+            return {"success": False, "segments": [], "text": "", "error": str(e)}
 
     # Compatibilidad con el contrato de transcripción de video.
     def transcribe_video(self, video_path: str, video_id: str = "", duration_hint: float = 0) -> dict:

@@ -23,6 +23,7 @@ import {
   HardDrive,
   BarChart3,
   Zap,
+  Eye,
 } from 'lucide-react';
 import { PageContainer } from '../components/ui/page-container';
 import { PageHeader } from '../components/ui/page-header';
@@ -388,6 +389,14 @@ export default function AudioAnalyses() {
                         <div className="flex items-center gap-2">
                           {analysis.estado === 'completed' && (
                             <>
+                              <Button
+                                className="min-w-[140px]"
+                                onClick={() => navigate({ to: `/audio/${analysis.id}` })}
+                                aria-label={t('audio.viewAnalysis')}
+                              >
+                                <Eye aria-hidden="true" />
+                                {t('audio.viewAnalysis')}
+                              </Button>
                               <Button
                                 variant="outline"
                                 size="sm"

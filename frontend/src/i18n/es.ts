@@ -404,6 +404,8 @@ export const es = {
   'audio.confidence': '{percent}% confianza',
   'audio.transcription': 'Transcripción',
   'audio.askAi': 'Consultar IA',
+  'audio.viewAnalysis': 'Ver análisis',
+  'audioDetail.copyFailed': 'No se pudo copiar la transcripción',
   'audio.cancelled': 'Cancelado',
   'audio.errorUnknown': 'Error desconocido',
   'audio.reprocess': 'Reprocesar',

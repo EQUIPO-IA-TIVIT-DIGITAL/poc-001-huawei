@@ -349,6 +349,7 @@ class AudioAnalyzer:
             # ══ COMPLETAR ════════════════════════════════════════════════════════
             analysis.completed_at = datetime.utcnow().isoformat()
             analysis.tiempo_procesamiento_segundos = round(time.time() - start_time, 2)
+            analysis.error_message = ""
             analysis.actualizar_estado(EstadoAudioAnalysis.COMPLETED, "Análisis completado", 100.0)
             self._repo.guardar_analisis(analysis)
 

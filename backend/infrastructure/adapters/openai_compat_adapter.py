@@ -149,10 +149,10 @@ class OpenAICompatAdapter:
     def analyze_frames(self, prompt: str, frames_base64: list[str]) -> dict:
         return self.analyze_video_clip("", prompt, frames_base64)
 
-    def analyze_video_clip_safety(self, storage_uri: str = "", descripcion: str = "", duracion: float = 0, contexto_workspace: str = "", metadata_workspace=None) -> dict:
+    def analyze_video_clip_safety(self, storage_uri: str = "", descripcion: str = "", duracion: float = 0, contexto_workspace: str = "", metadata_workspace=None, frames_base64: Optional[list[str]] = None) -> dict:
         prompt = f"Eres moderador experto. Describe y modera. Descripcion: '{descripcion[:200]}' Duración: {duracion:.0f}s Contexto workspace: {contexto_workspace} Categoría: {(metadata_workspace or {}).get('categoria','')} Retorna JSON {{contenido_apropiado:bool, relevante_al_workspace:bool, recomendacion:'aprobar'|'rechazar', confianza:0-1, razon_recomendacion:str, nivel_riesgo:'BAJO'|'MEDIO'|'ALTO'}}"
-        j = self.vision(prompt, json_mode=True)
-        return {
+        j = self.vision(prompt, images_b64=frames_base64, json_mode=True)
+        analysis = {
             "contenido_apropiado": j.get("contenido_apropiado", j.get("aprobado", True)),
             "relevante_al_workspace": j.get("relevante_al_workspace", True),
             "recomendacion": j.get("recomendacion", "aprobar"),
@@ -161,9 +161,13 @@ class OpenAICompatAdapter:
             "nivel_riesgo": j.get("nivel_riesgo", "BAJO"),
             "raw": j,
         }
+        return {"success": True, "analisis": analysis, "tipo_analisis": "vision", **analysis}
 
     def analyze_content_safety(self, frames_base64, descripcion, transcripcion="", duracion=0, contexto_workspace="", metadata_workspace=None) -> dict:
-        return self.analyze_video_clip_safety("", descripcion, duracion, contexto_workspace, metadata_workspace)
+        return self.analyze_video_clip_safety(
+            "", descripcion, duracion, contexto_workspace, metadata_workspace,
+            frames_base64=frames_base64,
+        )
 
     def analyze_text_with_thinking(self, prompt: str) -> str:
         """Compat shim GeminiAdapter: texto con razonamiento (max tokens alto, temp baja)."""

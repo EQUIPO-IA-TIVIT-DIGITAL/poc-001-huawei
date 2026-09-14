@@ -267,7 +267,7 @@ def iniciar_upload():
             "analysis_id": analysis_id,
             "upload_url": upload_data["upload_url"],
             "storage_path": upload_data["storage_path"],
-            "storage_bucket": upload_data["bucket"],
+            "storage_bucket": upload_data["storage_bucket"],
             "blob_name": upload_data["blob_name"],
             "expiration_hours": upload_data["expiration_hours"],
         }
