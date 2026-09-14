@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -42,5 +42,10 @@ export default defineConfig({
     port: 8080,
     // vite 7 types: string[] | true — use true via cast for strict ts
     allowedHosts: true as unknown as string[],
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 })
