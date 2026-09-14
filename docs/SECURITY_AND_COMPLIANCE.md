@@ -26,6 +26,18 @@
 - RQ workers receive jobs through authenticated Redis and run media processing outside request handlers.
 - Temporary media files are removed after processing and object lifecycle rules should expire transient prefixes.
 
+## Logging Hygiene
+
+- Connection URLs (Redis, database) are masked before logging; credentials never appear in plaintext in logs (`_mask_redis_url` in `job_queue.py`).
+- Error responses sanitize stack traces and debug fields before returning 5xx payloads.
+- Request correlation uses `X-Request-ID`; identifiers like usernames are masked (`u***e`) in auth logs.
+
+## Push / Git Hygiene
+
+- `.env` is gitignored and must never be committed; secrets are generated locally with a CSPRNG and rotated if exposed in logs or shared sessions.
+- Commits must pass the local CI replica before pushing: `pytest`, `flake8`, `npm test` (tsc + vitest), and Docker image builds.
+- Secret scanning (`gitleaks`) runs in CI; if a secret reaches history, rotate it immediately and force-remove it from the branch.
+
 ## Assurance
 
 CI runs dependency audits, Bandit, Trivy, and frontend checks. Review audit findings, rotate runtime secrets, patch base images, and back up PostgreSQL to MinIO on an operational schedule.
