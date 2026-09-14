@@ -264,17 +264,24 @@ def init_dependencies(app):
     try:
         from infrastructure.db.session import engine
         from sqlalchemy import text
-        # ensure tables exist (idempotente, para clone sin alembic)
-        try:
-            if db_backend == "postgres":
-                with engine.begin() as conn:
-                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-            from infrastructure.db.base import Base
-            import infrastructure.db.models  # noqa
-            Base.metadata.create_all(bind=engine)
-        except Exception as e:
-            logger.warning(f"create_all fallo (continuando): {e}")
+        # create_all SOLO en desarrollo/test: el esquema en producción se gestiona
+        # exclusivamente con Alembic (alembic upgrade head).
+        if app_config.APP_ENV in ("development", "local", "test"):
+            try:
+                if db_backend == "postgres":
+                    with engine.begin() as conn:
+                        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+                from infrastructure.db.base import Base
+                import infrastructure.db.models  # noqa
+                Base.metadata.create_all(bind=engine)
+            except Exception as e:
+                logger.warning(f"create_all fallo (continuando): {e}")
+        else:
+            logger.info(
+                "Esquema gestionado por Alembic (APP_ENV=%s); no se ejecuta create_all",
+                app_config.APP_ENV,
+            )
         class _LocalDB:
             def is_available(self):
                 try:
@@ -294,7 +301,15 @@ def init_dependencies(app):
         logger.error(f"❌ Local DB shim fallo: {e}")
 
     # ---- Cola de tareas (RQ / Redis vía job_queue module) ----
+    # Inicialización real de la cola para que health checks y consumidores
+    # reflejen el estado de Redis; si Redis no está disponible se degrada a None.
     task_queue = None
+    try:
+        from infrastructure.services.job_queue import get_video_queue
+        task_queue = get_video_queue()
+        logger.info("✅ Cola RQ inicializada (Redis disponible)")
+    except Exception as e:
+        logger.warning(f"⚠️ Cola RQ no disponible (Redis sin conexión): {e}")
 
     # ---- IA: Gateway 32B local / ApiLLM / disabled ----
     ai_provider = getattr(app_config, "AI_PROVIDER", "hybrid")

@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 
 from infrastructure.repositories.workspace_repository import WorkspaceRepositoryFirestore
-from infrastructure.repositories.video_repository import VideoRepositoryFirestore
+from infrastructure.repositories.sqlalchemy_repositories import SQLAlchemyVideoRepository
 from infrastructure.services.workspace_stats_service import recalculate_workspace_stats
 from infrastructure.services.workspace_audit import WorkspaceAuditLogger
 from infrastructure.services.workspace_transactions import (
@@ -62,7 +62,7 @@ def _get_workspace_repo():
 def _get_video_repo():
     global _video_repo
     if _video_repo is None:
-        _video_repo = VideoRepositoryFirestore()
+        _video_repo = SQLAlchemyVideoRepository()
     return _video_repo
 
 # Handler global para OPTIONS en todos los endpoints de este blueprint

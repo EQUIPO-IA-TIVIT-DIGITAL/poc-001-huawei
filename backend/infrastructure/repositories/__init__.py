@@ -1,13 +1,25 @@
 """
 Infraestructura de Repositorios - Persistencia de datos
-Cache en memoria + PostgreSQL/SQLAlchemy como backend principal
+Implementación única: PostgreSQL/SQLite vía SQLAlchemy.
+
+Aliases legacy mantenidos por compatibilidad con imports existentes;
+todos resuelven a las implementaciones SQLAlchemy.
 """
-from .user_repository import UsuarioRepositoryMemory, UsuarioRepositoryFirestore
-from .video_repository import VideoRepositoryMemory, VideoRepositoryFirestore
+from .sqlalchemy_repositories import (
+    SQLAlchemyVideoRepository,
+    SQLAlchemyUserRepository,
+    VideoRepositoryMemory,
+    VideoRepositoryFirestore,
+    UsuarioRepositoryMemory,
+    UsuarioRepositoryFirestore,
+)
 
 __all__ = [
-    'UsuarioRepositoryMemory', 
-    'UsuarioRepositoryFirestore',
+    'SQLAlchemyVideoRepository',
+    'SQLAlchemyUserRepository',
+    # Aliases deprecados (eliminables cuando no queden referencias)
     'VideoRepositoryMemory',
-    'VideoRepositoryFirestore'
+    'VideoRepositoryFirestore',
+    'UsuarioRepositoryMemory',
+    'UsuarioRepositoryFirestore',
 ]

@@ -1,9 +1,10 @@
 """Crea o actualiza el usuario demo de la base SQLite local."""
-import hashlib
 import os
 import sqlite3
 import uuid
 from pathlib import Path
+
+import bcrypt
 
 
 DATABASE_PATH = Path(__file__).resolve().parent.parent / "cu002.db"
@@ -33,7 +34,7 @@ def main() -> None:
             )
             """
         )
-        password_hash = hashlib.sha256(PASSWORD.encode()).hexdigest()
+        password_hash = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt()).decode()
         connection.execute(
             """
             INSERT INTO users (
@@ -56,7 +57,7 @@ def main() -> None:
                 "demo@local.test",
                 password_hash,
                 "Usuario Demo",
-                "admin",
+                "socio",
                 True,
             ),
         )

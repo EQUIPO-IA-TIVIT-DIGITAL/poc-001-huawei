@@ -5,8 +5,10 @@ Mapean domain/entities.py <-> infrastructure/db/models.py
 """
 import hashlib
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
+from sqlalchemy import tuple_
 from domain.entities import Video, EstadoVideo, Usuario, RolUsuario
 from infrastructure.db.session import SessionLocal, engine
 from infrastructure.db.models import VideoModel, UserModel, WorkspaceModel
@@ -123,15 +125,41 @@ class SQLAlchemyVideoRepository:
             db.close()
 
     def obtener_todos_paginado(self, limit: int = 20, cursor: Optional[str] = None):
-        # cursor = id offset simple
+        # Cursor opaco "created_at|id" coherente con el orden (created_at DESC, id DESC).
+        # Evita duplicados/omisiones que causaba filtrar por id con orden por fecha.
+        import base64
+        import json as _json
+
+        def _decode_cursor(raw: str):
+            try:
+                data = _json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+                return datetime.fromisoformat(data["created_at"]), data["id"]
+            except Exception:
+                return None, None
+
         db = SessionLocal()
         try:
-            q = db.query(VideoModel).order_by(VideoModel.created_at.desc())
+            q = db.query(VideoModel).order_by(
+                VideoModel.created_at.desc(), VideoModel.id.desc()
+            )
             if cursor:
-                q = q.filter(VideoModel.id > cursor)
+                cur_dt, cur_id = _decode_cursor(cursor)
+                if cur_dt is not None:
+                    # keyset: fila estrictamente "anterior" en el orden declarado
+                    q = q.filter(
+                        tuple_(VideoModel.created_at, VideoModel.id) < (cur_dt, cur_id)
+                    )
             rows = q.limit(limit + 1).all()
-            next_cursor = rows[-1].id if len(rows) > limit else None
-            return [_video_to_entity(r) for r in rows[:limit]], next_cursor
+
+            next_cursor = None
+            if len(rows) > limit:
+                rows = rows[:limit]
+                last = rows[-1]
+                payload = _json.dumps(
+                    {"created_at": last.created_at.isoformat(), "id": last.id}
+                )
+                next_cursor = base64.urlsafe_b64encode(payload.encode()).decode()
+            return [_video_to_entity(r) for r in rows], next_cursor
         finally:
             db.close()
 
