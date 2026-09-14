@@ -110,23 +110,22 @@ tivit-cu002/
 |   +-- worker.py                   # RQ worker for async video processing
 |   +-- Dockerfile.backend          # Backend production image
 |   +-- Dockerfile.worker           # RQ worker image
-|   +-- requirements.txt            # Python dependencies
-|   +-- requirements-dev.txt        # Dev/linting dependencies
+|   +-- requirements.in / .txt      # Python dependencies (compiled with pip-tools)
 |   +-- config/                     # Local configuration and blacklist
 |   +-- domain/
 |   |   +-- entities.py             # Domain entities and business rules
 |   +-- use_cases/                  # Business logic orchestrators
-|   |   +-- video_processor.py
-|   |   +-- security_video_processor.py
-|   |   +-- complete_security_processor.py
-|   |   +-- operational_analyzer.py
-|   |   +-- audio_analyzer.py
-|   |   +-- security_query_engine.py
+|   |   +-- socio_video/            # Moderation pipeline (5 steps)
+|   |   +-- security/               # Security analysis
+|   |   +-- operational/            # Operational analysis
+|   |   +-- realtime/               # RTSP streaming
 |   +-- infrastructure/
-|       +-- adapters/               # Local AI, MinIO, Whisper and OpenCV adapters
-|       +-- repositories/           # SQLAlchemy repositories
-|       +-- services/               # Cross-cutting services (cache, observability, logging)
-|       +-- web/                    # HTTP layer (10 blueprints)
+|   |   +-- adapters/               # Local AI, MinIO, Whisper and OpenCV adapters
+|   |   +-- repositories/           # SQLAlchemy repositories (single source of truth)
+|   |   +-- services/               # Cross-cutting services (cache, observability, logging)
+|   |   +-- web/                    # HTTP layer (9 blueprints)
+|   +-- alembic/                    # Database migrations
+|   +-- tests/                      # pytest suite (config, repositories, auth)
 +-- frontend/
 |   +-- src/
 |       +-- main.tsx
@@ -137,16 +136,18 @@ tivit-cu002/
 |       +-- services/               # API clients
 |       +-- layouts/                # Application layouts
 |       +-- lib/                    # Shared utilities
+|   +-- package.json                # Scripts: dev, build, lint, test (tsc + vitest)
 +-- docs/                           # Technical documentation
-+-- .github/workflows/              # GitHub Actions (CI: lint + security audit)
-+-- docker-compose.yml              # 4 services: backend, frontend, redis, worker
++-- .github/workflows/              # GitHub Actions (CI: lint + tests + security audit)
++-- docker-compose.yml              # Minimal dev stack (SQLite/filesystem)
++-- docker-compose.local.yml        # Full local stack (PostgreSQL, MinIO, profiles)
 +-- .env.example                    # Environment variable reference
 ```
 
 ## Tests And Quality
 
 ```bash
-# Backend
+# Backend (28 tests: config, repositories, pagination, auth)
 cd backend
 pip install pip-tools
 pip-compile requirements.in -o requirements.txt
@@ -155,10 +156,11 @@ pip install -r requirements-dev.txt
 pytest
 flake8 .
 
-# Frontend
+# Frontend (test = typecheck + vitest unit tests)
 cd ../frontend
 npm ci
 npm test
+npm run test:unit        # unit tests only (vitest)
 npm run lint
 npm run build
 ```
@@ -180,10 +182,21 @@ cd poc-001-huawei
 # Copy and configure environment variables
 cp .env.example .env
 # Edit .env and fill in the required values
-
-# Start the full local stack (PostgreSQL + pgvector, MinIO, Redis, backend, worker, frontend)
-docker compose -f docker-compose.local.yml up -d --build
 ```
+
+#### Execution Profiles
+
+| Profile | Command | Includes |
+|---------|---------|----------|
+| **Base (CPU, no AI)** | `docker compose -f docker-compose.local.yml up -d --build` | PostgreSQL + pgvector, MinIO, Redis, backend, worker, frontend |
+| **Full (GPU, local AI)** | `docker compose -f docker-compose.local.yml --profile gpu up -d --build` | Base + vLLM vision (Qwen2.5-VL-32B-AWQ), vLLM text (Qwen2.5-32B-AWQ), Whisper |
+
+Notes:
+
+- The GPU profile requires an NVIDIA host with the nvidia container runtime and at least 8 GPUs (2× TP4 groups) plus ~200 GB for the models volume. Pre-pull models offline with `backend/scripts/pull_models.sh`.
+- Without `--profile gpu`, the backend starts correctly but local AI and Whisper are **not** available. Set `AI_PROVIDER=api` (with `AI_API_BASE_URL`/`AI_API_KEY`) or `AI_PROVIDER=disabled` in `.env` accordingly.
+- Optional helpers: `--profile setup` (creates MinIO buckets) and `--profile pool` (pgBouncer).
+- Run Alembic migrations after the database is up: `docker compose -f docker-compose.local.yml exec backend alembic upgrade head`.
 
 ### Development Services
 

@@ -134,14 +134,17 @@ def create_app():
             response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         
         # Content Security Policy
-        # Allow self, inline styles (needed for Tailwind), and specific external resources
+        # - script-src: sin 'unsafe-inline'; blob: requerido por FFmpeg.wasm (worker core)
+        # - connect-src: unpkg.com para descargar el core de FFmpeg (toBlobURL)
+        # - Google Fonts para tipografías (style + font)
         csp_directives = [
             "default-src 'self'",
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-            "style-src 'self' 'unsafe-inline'",
+            "script-src 'self' blob:",
+            "worker-src 'self' blob:",
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "img-src 'self' data: https: blob:",
-            "font-src 'self' data:",
-            "connect-src 'self'",
+            "font-src 'self' data: https://fonts.gstatic.com",
+            "connect-src 'self' https://unpkg.com",
             "media-src 'self' blob:",
             "object-src 'none'",
             "base-uri 'self'",
@@ -198,11 +201,21 @@ def create_app():
     # ===== CONFIGURACIÓN =====
     # Configuración de seguridad y sesiones
     secret_key = os.environ.get("SECRET_KEY")
-    if not secret_key:
-        if is_production:
+    if is_production:
+        # Fail-fast en producción: clave obligatoria, no conocida y >= 64 caracteres.
+        if not secret_key:
             raise ValueError(
                 "SECRET_KEY es OBLIGATORIO en producción. Configure la variable de entorno."
             )
+        if secret_key == "dev-only-insecure-key-not-for-production":
+            raise ValueError(
+                "SECRET_KEY de desarrollo detectado en producción. Genere una clave segura."
+            )
+        if len(secret_key) < 64:
+            raise ValueError(
+                "SECRET_KEY debe tener al menos 64 caracteres en producción."
+            )
+    elif not secret_key:
         secret_key = "dev-only-insecure-key-not-for-production"
         logger.warning("Usando SECRET_KEY de desarrollo. NO usar en producción.")
     app.config["SECRET_KEY"] = secret_key

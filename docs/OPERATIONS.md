@@ -12,10 +12,11 @@ cp .env.example .env
 # 1. Pull modelos 32B (una vez con internet, ~70GB en volumen models)
 bash backend/scripts/pull_models.sh
 
-# 2. Levantar stack 9 servicios
-docker compose -f docker-compose.local.yml up -d --build
+# 2. Levantar stack 9 servicios (añade --profile gpu para vLLM + Whisper)
+docker compose -f docker-compose.local.yml --profile gpu up -d --build
 docker compose -f docker-compose.local.yml ps
-# Espera healthchecks: postgres -> minio -> vllm-vision (120s) -> vllm-text (90s) -> backend
+# Sin GPU: levanta solo base (postgres, minio, redis, backend, worker, frontend)
+# y configura AI_PROVIDER=api o disabled en .env
 
 # 3. Migraciones
 docker compose -f docker-compose.local.yml exec backend alembic upgrade head
