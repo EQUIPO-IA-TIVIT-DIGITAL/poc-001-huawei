@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { X, CheckCircle2, XCircle, AlertTriangle, Loader2, ChevronDown, ChevronUp, Film } from 'lucide-react';
+import {
+    X, CheckCircle2, XCircle, AlertTriangle, Loader2, ChevronDown, ChevronUp, Film,
+} from 'lucide-react';
 import { apiRequest } from '../lib/api';
+import { Progress } from './ui/progress';
+import { Button } from './ui/button';
+import { useTranslation } from '../i18n';
+import type { TranslationKey } from '../i18n/es';
 
 interface VideoStatus {
     video_id: string;
@@ -35,7 +41,46 @@ interface BatchNotificationProps {
     onComplete?: () => void;
 }
 
+function getStatusIcon(video: VideoStatus) {
+    if (video.status === 'aprobado' || video.resultado === 'APROBADO') {
+        return <CheckCircle2 className="h-4 w-4 text-success" aria-hidden="true" />;
+    }
+    if (video.status === 'rechazado' || video.resultado === 'RECHAZADO') {
+        return <XCircle className="h-4 w-4 text-error" aria-hidden="true" />;
+    }
+    if (video.status === 'error') {
+        return <AlertTriangle className="h-4 w-4 text-error" aria-hidden="true" />;
+    }
+    if (video.status === 'en_revision' || video.resultado === 'REQUIERE_REVISION') {
+        return <AlertTriangle className="h-4 w-4 text-warning" aria-hidden="true" />;
+    }
+    if (video.status === 'procesando') {
+        return (
+            <div className="relative">
+                <Loader2 className="h-4 w-4 animate-spin text-info" aria-hidden="true" />
+                <span className="absolute inset-0 animate-ping rounded-full border border-info opacity-75" />
+            </div>
+        );
+    }
+    return <Loader2 className="h-4 w-4 animate-pulse text-muted-foreground" aria-hidden="true" />;
+}
+
+function getStatusLabel(video: VideoStatus, t: (key: TranslationKey, vars?: Record<string, string | number>) => string) {
+    if (video.resultado === 'APROBADO') return t('batch.statusApproved');
+    if (video.resultado === 'RECHAZADO') return t('batch.statusRejected');
+    if (video.resultado === 'REQUIERE_REVISION') return t('batch.statusReview');
+    if (video.status === 'error') return t('batch.statusError');
+    if (video.status === 'procesando') {
+        return t('batch.statusStep', {
+            step: video.step || 0,
+            total: video.total_steps || 5,
+        });
+    }
+    return t('batch.statusQueued');
+}
+
 export function BatchNotification({ batchId, onClose, onComplete }: BatchNotificationProps) {
+    const { t } = useTranslation();
     const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
     const [expanded, setExpanded] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -51,17 +96,16 @@ export function BatchNotification({ batchId, onClose, onComplete }: BatchNotific
                     if (onComplete) onComplete();
                 }
             }
-        } catch (err) {
-            setError('Error consultando estado del batch');
+        } catch {
+            setError(t('batch.loadError'));
         }
-    }, [batchId, onComplete]);
+    }, [batchId, onComplete, t]);
 
-    // Poll every 2 seconds while processing
     useEffect(() => {
-        fetchStatus();
+        void fetchStatus();
         const interval = setInterval(() => {
             if (!isComplete) {
-                fetchStatus();
+                void fetchStatus();
             }
         }, 2000);
         return () => clearInterval(interval);
@@ -69,10 +113,10 @@ export function BatchNotification({ batchId, onClose, onComplete }: BatchNotific
 
     if (!batchStatus) {
         return (
-            <div className="fixed bottom-4 right-4 z-50 bg-white rounded-2xl shadow-2xl border border-gray-200 p-4 w-96 animate-in slide-in-from-bottom-5">
-                <div className="flex items-center gap-3">
-                    <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
-                    <span className="text-sm text-gray-700">Conectando...</span>
+            <div className="fixed bottom-4 right-4 z-50 w-96 rounded-2xl border border-border bg-card p-4 shadow-popover">
+                <div className="flex items-center gap-3" aria-live="polite">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" aria-hidden="true" />
+                    <span className="text-sm text-muted-foreground">{t('batch.connecting')}</span>
                 </div>
             </div>
         );
@@ -80,154 +124,126 @@ export function BatchNotification({ batchId, onClose, onComplete }: BatchNotific
 
     const { resumen, videos } = batchStatus;
     const isProcessing = batchStatus.status === 'processing';
-
-    const getStatusIcon = (video: VideoStatus) => {
-        if (video.status === 'aprobado' || video.resultado === 'APROBADO') {
-            return <CheckCircle2 className="w-4 h-4 text-green-500" />;
-        }
-        if (video.status === 'rechazado' || video.resultado === 'RECHAZADO') {
-            return <XCircle className="w-4 h-4 text-red-500" />;
-        }
-        if (video.status === 'error') {
-            return <AlertTriangle className="w-4 h-4 text-red-500" />;
-        }
-        if (video.status === 'en_revision' || video.resultado === 'REQUIERE_REVISION') {
-            return <AlertTriangle className="w-4 h-4 text-amber-500" />;
-        }
-        if (video.status === 'procesando') {
-            return (
-                <div className="relative">
-                    <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                    <span className="absolute inset-0 w-4 h-4 rounded-full border border-blue-400 animate-ping opacity-75"></span>
-                </div>
-            );
-        }
-        return (
-            <div className="relative">
-                <Loader2 className="w-4 h-4 text-gray-400 animate-pulse" />
-            </div>
-        );
-    };
-
-    const getStatusLabel = (video: VideoStatus) => {
-        if (video.resultado === 'APROBADO') return 'Aprobado';
-        if (video.resultado === 'RECHAZADO') return 'Rechazado';
-        if (video.resultado === 'REQUIERE_REVISION') return 'En revisión';
-        if (video.status === 'error') return 'Error';
-        if (video.status === 'procesando') {
-            const step = video.step || 0;
-            const total = video.total_steps || 5;
-            return `Paso ${step}/${total}`;
-        }
-        return 'En cola';
-    };
+    const progressTone = isProcessing
+        ? 'bg-primary'
+        : resumen.errores > 0
+            ? 'bg-warning'
+            : 'bg-success';
 
     return (
-        <div className="fixed bottom-4 right-4 z-50 bg-white rounded-2xl shadow-2xl border border-gray-200 w-96 animate-in slide-in-from-bottom-5 overflow-hidden">
-            {/* Header */}
-            <div className="px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-100">
+        <div
+            className="fixed bottom-4 right-4 z-50 w-96 overflow-hidden rounded-2xl border border-border bg-card shadow-popover"
+            aria-live="polite"
+        >
+            <div className="border-b border-border bg-muted/40 px-4 py-3">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <div className="relative w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                            <Film className="w-4 h-4 text-white" />
+                        <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
+                            <Film className="h-4 w-4 text-primary-foreground" aria-hidden="true" />
                             {isProcessing && (
-                                <>
-                                    <span className="absolute inset-0 rounded-lg bg-blue-400 animate-ping opacity-75"></span>
-                                    <span className="absolute inset-0 rounded-lg border-2 border-blue-400 animate-pulse"></span>
-                                </>
+                                <span className="absolute inset-0 animate-ping rounded-lg bg-primary opacity-40" />
                             )}
                         </div>
                         <div>
-                            <p className="font-semibold text-gray-900 text-sm">
+                            <p className="text-sm font-semibold text-foreground">
                                 {isProcessing ? (
-                                    <span className="animate-pulse">Procesando videos...</span>
+                                    <span className="animate-pulse">{t('batch.processing')}</span>
                                 ) : (
-                                    'Procesamiento completado'
+                                    t('batch.completedTitle')
                                 )}
                             </p>
-                            <p className="text-xs text-gray-500">
-                                {resumen.completados + resumen.errores}/{resumen.total} completados
+                            <p className="text-xs text-muted-foreground">
+                                {t('batch.progressCount', {
+                                    done: resumen.completados + resumen.errores,
+                                    total: resumen.total,
+                                })}
                             </p>
                         </div>
                     </div>
                     <div className="flex items-center gap-1">
-                        <button
+                        <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={expanded ? t('batch.collapse') : t('batch.expand')}
+                            aria-expanded={expanded}
                             onClick={() => setExpanded(!expanded)}
-                            className="p-1.5 hover:bg-gray-200 rounded-lg transition-colors"
                         >
-                            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-                        </button>
+                            {expanded ? (
+                                <ChevronDown aria-hidden="true" />
+                            ) : (
+                                <ChevronUp aria-hidden="true" />
+                            )}
+                        </Button>
                         {!isProcessing && (
-                            <button
+                            <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={t('batch.close')}
                                 onClick={onClose}
-                                className="p-1.5 hover:bg-gray-200 rounded-lg transition-colors"
                             >
-                                <X className="w-4 h-4" />
-                            </button>
+                                <X aria-hidden="true" />
+                            </Button>
                         )}
                     </div>
                 </div>
 
-                {/* Progress bar */}
-                <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden relative">
-                    <div
-                        className={`h-full rounded-full transition-all duration-500 ${
-                            isProcessing 
-                                ? 'bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-600' 
-                                : resumen.errores > 0 
-                                    ? 'bg-gradient-to-r from-amber-500 to-amber-600'
-                                    : 'bg-gradient-to-r from-green-500 to-emerald-600'
-                        }`}
-                        style={{ width: `${resumen.progreso_pct}%` }}
-                    >
-                        {isProcessing && (
-                            <>
-                                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-pulse"></div>
-                                <div className="absolute right-0 top-0 h-full w-8 bg-gradient-to-r from-transparent to-white opacity-20 animate-pulse"></div>
-                            </>
-                        )}
-                    </div>
-                </div>
+                <Progress
+                    value={resumen.progreso_pct}
+                    indicatorClassName={progressTone}
+                    className="mt-2"
+                    aria-label={t('batch.progressLabel')}
+                />
 
-                {/* Summary chips */}
                 {!isProcessing && (
-                    <div className="flex gap-2 mt-2 flex-wrap">
+                    <div className="mt-2 flex flex-wrap gap-2">
                         {resumen.completados > 0 && (
-                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
-                                {resumen.completados - resumen.errores} aprobados
+                            <span className="rounded-full bg-success-surface px-2 py-0.5 text-xs font-medium text-success">
+                                {t('batch.approvedCount', {
+                                    count: resumen.completados - resumen.errores,
+                                })}
                             </span>
                         )}
                         {resumen.errores > 0 && (
-                            <span className="text-xs px-2 py-0.5 bg-red-100 text-red-700 rounded-full font-medium">
-                                {resumen.errores} errores
+                            <span className="rounded-full bg-error-surface px-2 py-0.5 text-xs font-medium text-error">
+                                {t('batch.errorCount', { count: resumen.errores })}
                             </span>
                         )}
                     </div>
                 )}
             </div>
 
-            {/* Video list (expanded) */}
             {expanded && (
-                <div className="max-h-64 overflow-y-auto divide-y divide-gray-50">
+                <div
+                    className="max-h-64 divide-y divide-border overflow-y-auto"
+                    aria-label={t('batch.listLabel')}
+                >
                     {videos.map((video) => (
-                        <div key={video.video_id} className="px-4 py-2.5 flex items-center gap-3 hover:bg-gray-50 transition-colors">
+                        <div
+                            key={video.video_id}
+                            className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-muted/40"
+                        >
                             {getStatusIcon(video)}
-                            <div className="flex-1 min-w-0">
-                                <p className="text-sm text-gray-900 truncate" title={video.nombre}>
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm text-foreground" title={video.nombre}>
                                     {video.titulo || video.nombre}
                                 </p>
                                 {video.status === 'procesando' && video.message && (
-                                    <p className="text-xs text-gray-500 truncate">{video.message}</p>
+                                    <p className="truncate text-xs text-muted-foreground">{video.message}</p>
                                 )}
                             </div>
-                            <span className={`text-xs font-medium flex-shrink-0 ${
-                                video.resultado === 'APROBADO' ? 'text-green-600' :
-                                video.resultado === 'RECHAZADO' ? 'text-red-600' :
-                                video.resultado === 'REQUIERE_REVISION' ? 'text-amber-600' :
-                                video.status === 'error' ? 'text-red-600' :
-                                'text-blue-600'
-                            }`}>
-                                {getStatusLabel(video)}
+                            <span
+                                className={`flex-shrink-0 text-xs font-medium ${video.resultado === 'APROBADO'
+                                    ? 'text-success'
+                                    : video.resultado === 'RECHAZADO'
+                                        ? 'text-error'
+                                        : video.resultado === 'REQUIERE_REVISION'
+                                            ? 'text-warning'
+                                            : video.status === 'error'
+                                                ? 'text-error'
+                                                : 'text-info'
+                                    }`}
+                            >
+                                {getStatusLabel(video, t)}
                             </span>
                         </div>
                     ))}
@@ -235,7 +251,7 @@ export function BatchNotification({ batchId, onClose, onComplete }: BatchNotific
             )}
 
             {error && (
-                <div className="px-4 py-2 bg-red-50 text-red-600 text-xs border-t border-red-100">
+                <div className="border-t border-error-border bg-error-surface px-4 py-2 text-xs text-error">
                     {error}
                 </div>
             )}

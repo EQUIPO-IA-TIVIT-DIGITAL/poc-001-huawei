@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-router';
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools';
 import { AuthRedirectHandler } from './components/AuthRedirectHandler';
+import { NotFound } from './components/NotFound';
 import { authService } from './services/auth';
 import { lazy, Suspense } from 'react';
 
@@ -49,18 +50,7 @@ const rootRoute = createRootRoute({
         </>
     ),
     notFoundComponent: () => (
-        <div className="flex items-center justify-center min-h-screen">
-            <div className="text-center">
-                <h1 className="text-6xl font-bold text-gray-800">404</h1>
-                <p className="text-xl text-gray-600 mt-4">Página no encontrada</p>
-                <a
-                    href="/"
-                    className="mt-6 inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                    Volver al inicio
-                </a>
-            </div>
-        </div>
+        <NotFound to="/login" backLabel="Volver al inicio" />
     ),
 });
 
@@ -69,7 +59,7 @@ const SuspenseWrapper = ({ children }: { children: React.ReactNode }) => (
     <Suspense
         fallback={
             <div className="flex items-center justify-center min-h-[50vh]">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent"></div>
             </div>
         }
     >
@@ -117,18 +107,7 @@ const dashboardLayoutRoute = createRoute({
     id: 'app',
     component: DashboardLayout,
     notFoundComponent: () => (
-        <div className="flex items-center justify-center min-h-screen">
-            <div className="text-center">
-                <h1 className="text-6xl font-bold text-gray-800">404</h1>
-                <p className="text-xl text-gray-600 mt-4">Página no encontrada</p>
-                <a
-                    href="/dashboard"
-                    className="mt-6 inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                    Volver al Dashboard
-                </a>
-            </div>
-        </div>
+        <NotFound to="/dashboard" />
     ),
     beforeLoad: async ({ location }) => {
         const sessionUser = await authService.verifySession();

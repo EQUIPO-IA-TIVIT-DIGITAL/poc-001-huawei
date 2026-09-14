@@ -15,8 +15,6 @@ import {
   Image,
   ChevronDown,
   ChevronUp,
-  ChevronLeft,
-  ChevronRight,
   Loader2,
   User,
   ArrowRight,
@@ -26,17 +24,40 @@ import {
   AlertTriangle,
   XCircle,
   Ban,
+  Activity,
 } from 'lucide-react';
+import { PageContainer } from '../components/ui/page-container';
+import { Button } from '../components/ui/button';
+import { Card } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Alert, AlertDescription } from '../components/ui/alert';
+import { Progress } from '../components/ui/progress';
+import { LoadingState } from '../components/ui/loading-state';
+import { ErrorState } from '../components/ui/error-state';
+import { EmptyState } from '../components/ui/empty-state';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import { Pagination } from '../components/ui/pagination';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useTranslation } from '../i18n';
+
+const statusFromEstado = (estado: string): AppStatus => {
+  if (estado === 'completed') return 'completed';
+  if (estado === 'error') return 'failed';
+  if (estado === 'cancelled') return 'cancelled';
+  return 'processing';
+};
 
 export default function OperationalVideoDetail() {
   const { analysisId } = useParams({ strict: false }) as { analysisId: string };
   const navigate = useNavigate();
+  const { t, formatDateTime } = useTranslation();
 
   // Core state
   const [analysis, setAnalysis] = useState<OperationalAnalysis | null>(null);
   const [events, setEvents] = useState<OperationalEvent[]>([]);
   const [types, setTypes] = useState<Record<string, OperationalAnalysisType>>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
 
   // Pagination
@@ -55,6 +76,7 @@ export default function OperationalVideoDetail() {
 
   // Cancel
   const [cancelling, setCancelling] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
 
   // ETA
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
@@ -66,7 +88,6 @@ export default function OperationalVideoDetail() {
   useEffect(() => {
     if (analysisId) loadData();
     return () => {
-      // Cleanup SSE on unmount
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -76,11 +97,13 @@ export default function OperationalVideoDetail() {
         pollingCleanupRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisId]);
 
   const loadData = async () => {
     try {
       setLoading(true);
+      setLoadError(false);
       const [a, t] = await Promise.all([
         operationalVideoService.obtenerAnalisis(analysisId),
         operationalVideoService.listarTipos(),
@@ -93,8 +116,9 @@ export default function OperationalVideoDetail() {
       } else if (operationalVideoService.isProcessing(a.estado)) {
         startSSE();
       }
-    } catch (error: any) {
-      toast.error(error.message || 'Error cargando análisis');
+    } catch (error) {
+      setLoadError(true);
+      toast.error(getErrorText(error, t('operationalDetail.loadError')));
     } finally {
       setLoading(false);
     }
@@ -102,13 +126,17 @@ export default function OperationalVideoDetail() {
 
   const loadEvents = async (page: number) => {
     try {
-      const res: PaginatedEvents = await operationalVideoService.obtenerEventos(analysisId, page, PER_PAGE);
+      const res: PaginatedEvents = await operationalVideoService.obtenerEventos(
+        analysisId,
+        page,
+        PER_PAGE,
+      );
       setEvents(res.events);
       setCurrentPage(res.page);
       setTotalPages(res.total_pages);
       setTotalEvents(res.total);
-    } catch (error: any) {
-      console.error('Error loading events:', error);
+    } catch {
+      toast.error(t('operationalDetail.eventsError'));
     }
   };
 
@@ -117,14 +145,13 @@ export default function OperationalVideoDetail() {
   // ═══════════════════════════════════════════════════
 
   const startSSE = useCallback(() => {
-    if (eventSourceRef.current) return; // Already connected
+    if (eventSourceRef.current) return;
 
     try {
       const es = operationalVideoService.connectSSE(
         analysisId,
         (data: SSEProgressData) => {
           setSSEConnected(true);
-          // Capture ETA
           if (data.eta_seconds != null) {
             setEtaSeconds(data.eta_seconds);
           }
@@ -147,31 +174,29 @@ export default function OperationalVideoDetail() {
             setEtaSeconds(null);
             eventSourceRef.current = null;
             if (data.status === 'completed') {
-              toast.success('¡Análisis completado!');
+              toast.success(t('operationalDetail.completedToast'));
               loadEvents(1);
-              // Reload full analysis to get report URLs
               operationalVideoService.obtenerAnalisis(analysisId).then((a) => {
                 setAnalysis(a);
               });
             } else if (data.status === 'cancelled') {
-              toast.info('Análisis cancelado');
+              toast.info(t('operationalDetail.cancelledToast'));
             } else if (data.status === 'error') {
-              toast.error('El análisis falló');
+              toast.error(t('operationalDetail.failedToast'));
             }
           }
         },
         () => {
           setSSEConnected(false);
           eventSourceRef.current = null;
-          // Fallback to polling
           startPolling();
-        }
+        },
       );
       eventSourceRef.current = es;
     } catch {
-      // Fallback to polling if SSE not supported
       startPolling();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisId]);
 
   // Polling fallback
@@ -188,16 +213,20 @@ export default function OperationalVideoDetail() {
         if (updated.estado === 'completed') {
           clearInterval(interval);
           pollingCleanupRef.current = null;
-          await loadEvents(1);          toast.success('¡Análisis completado!');
+          await loadEvents(1);
+          toast.success(t('operationalDetail.completedToast'));
         } else if (updated.estado === 'error') {
           clearInterval(interval);
           pollingCleanupRef.current = null;
-          toast.error('El análisis falló');
+          toast.error(t('operationalDetail.failedToast'));
         }
-      } catch { /* ignore polling errors */ }
+      } catch {
+        /* ignore polling errors */
+      }
     }, 8000);
 
     pollingCleanupRef.current = () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisId]);
 
   // ═══════════════════════════════════════════════════
@@ -209,13 +238,14 @@ export default function OperationalVideoDetail() {
     try {
       setReprocessing(true);
       const res = await operationalVideoService.reprocesarAnalisis(analysisId);
-      toast.success(res.message || 'Reprocesamiento iniciado');
-      // Reset state and start SSE
-      setAnalysis((prev) => prev ? { ...prev, estado: 'pending', progress: 0, current_phase: '' } : prev);
+      toast.success(res.message || t('operationalDetail.reprocessSuccess'));
+      setAnalysis((prev) =>
+        prev ? { ...prev, estado: 'pending', progress: 0, current_phase: '' } : prev,
+      );
       setEvents([]);
       startSSE();
-    } catch (error: any) {
-      toast.error(error.message || 'Error reprocesando');
+    } catch (error) {
+      toast.error(getErrorText(error, t('operationalDetail.reprocessFailed')));
     } finally {
       setReprocessing(false);
     }
@@ -223,12 +253,11 @@ export default function OperationalVideoDetail() {
 
   const handleCancel = async () => {
     if (!analysis || !operationalVideoService.isCancellable(analysis.estado)) return;
-    if (!confirm('¿Estás seguro de cancelar este análisis? No se podrá reanudar.')) return;
     try {
       setCancelling(true);
       await operationalVideoService.cancelarAnalisis(analysisId);
-      toast.info('Análisis cancelado');
-      setAnalysis((prev) => prev ? { ...prev, estado: 'cancelled' } : prev);
+      toast.info(t('operationalDetail.cancelSuccess'));
+      setAnalysis((prev) => (prev ? { ...prev, estado: 'cancelled' } : prev));
       setEtaSeconds(null);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -238,13 +267,13 @@ export default function OperationalVideoDetail() {
         pollingCleanupRef.current();
         pollingCleanupRef.current = null;
       }
-    } catch (error: any) {
-      toast.error(error.message || 'Error cancelando');
+    } catch (error) {
+      toast.error(getErrorText(error, t('operationalDetail.cancelFailed')));
     } finally {
       setCancelling(false);
+      setShowCancelDialog(false);
     }
   };
-
 
   // ═══════════════════════════════════════════════════
   // HELPERS
@@ -258,24 +287,26 @@ export default function OperationalVideoDetail() {
     return `${m}:${String(s).padStart(2, '0')}`;
   };
 
-  const formatDate = (isoDate: string) => {
-    if (!isoDate) return 'N/A';
-    return new Date(isoDate).toLocaleString('es-ES', {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    });
-  };
-
   // ═══════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════
 
   if (loading) {
+    return <LoadingState label={t('operationalDetail.loading')} className="min-h-[60vh]" />;
+  }
+
+  if (loadError && !analysis) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 animate-spin text-tivit-red mx-auto mb-4" />
-          <p className="text-gray-600">Cargando análisis...</p>
+      <div className="mx-auto max-w-3xl p-6">
+        <ErrorState
+          title={t('operationalDetail.loadError')}
+          description={t('common.errorGeneric')}
+          onRetry={loadData}
+        />
+        <div className="mt-4">
+          <Button variant="outline" onClick={() => navigate({ to: '/operational' })}>
+            {t('common.back')}
+          </Button>
         </div>
       </div>
     );
@@ -283,18 +314,25 @@ export default function OperationalVideoDetail() {
 
   if (!analysis) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-gray-600 mb-4">Análisis no encontrado</p>
-          <button onClick={() => navigate({ to: '/operational' })} className="text-tivit-red hover:underline">
-            Volver
-          </button>
-        </div>
+      <div className="mx-auto max-w-3xl p-6">
+        <EmptyState
+          icon={<Activity aria-hidden="true" />}
+          title={t('operationalDetail.notFound')}
+          action={
+            <Button onClick={() => navigate({ to: '/operational' })}>{t('common.back')}</Button>
+          }
+        />
       </div>
     );
   }
 
-  const typeInfo = types[analysis.analysis_type] || { name: analysis.analysis_type, icon: '📊' };
+  const typeInfo = types[analysis.analysis_type] || {
+    name: analysis.analysis_type,
+    description: '',
+    icon: '',
+    key_metrics: [],
+    estimated_minutes_per_hour: 0,
+  };
   const isProcessing = operationalVideoService.isProcessing(analysis.estado);
   const isCancellable = operationalVideoService.isCancellable(analysis.estado);
   const isCancelled = analysis.estado === 'cancelled';
@@ -302,350 +340,343 @@ export default function OperationalVideoDetail() {
   const isCompleted = analysis.estado === 'completed';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-stone-100 py-8 px-4">
-      <div className="max-w-5xl mx-auto space-y-6">
-        {/* Back + Header */}
-        <div className="mb-6">
-          <button
-            onClick={() => navigate({ to: '/operational' })}
-            className="flex items-center gap-2 text-slate-500 hover:text-slate-800 font-bold mb-4 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-            Volver a Análisis Operativo
-          </button>
+    <PageContainer className="max-w-5xl pb-16">
+      <Button
+        variant="ghost"
+        onClick={() => navigate({ to: '/operational' })}
+        className="w-fit px-0 font-bold hover:bg-transparent"
+      >
+        <ArrowLeft aria-hidden="true" />
+        {t('operationalDetail.back')}
+      </Button>
 
-          <div className="relative bg-white rounded-[32px] shadow-sm border border-slate-200/60 p-8 lg:p-10 overflow-hidden">
-            {/* Subtle glow */}
-            <div className="absolute top-0 right-0 w-[400px] h-[400px] rounded-full blur-3xl -mr-32 -mt-32 opacity-30 pointer-events-none bg-blue-50" />
-
-            <div className="relative flex flex-col md:flex-row md:items-start justify-between gap-6">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 rounded-[12px] bg-red-50 border border-red-100/60 flex items-center justify-center shadow-sm">
-                    <span className="text-[20px] leading-none">{typeInfo.icon}</span>
-                  </div>
-                  <span className="text-[13px] font-bold text-red-600 tracking-wide uppercase">
-                    {typeInfo.name}
-                  </span>
-                  {sseConnected && (
-                    <span className="text-[11px] font-bold bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full uppercase tracking-widest animate-pulse border border-emerald-200">
-                      En vivo
-                    </span>
-                  )}
-                </div>
-                <h1 className="text-3xl lg:text-4xl font-bold text-slate-800 tracking-tight mb-2 truncate">
-                  {analysis.video_filename}
-                </h1>
-                {analysis.custom_context && (
-                  <p className="text-[16px] font-medium text-slate-500 italic mt-2">
-                    "{analysis.custom_context}"
-                  </p>
-                )}
-                <div className="flex flex-wrap gap-4 mt-4 text-[13px] font-bold text-slate-500 uppercase tracking-wide">
-                  {analysis.nombre_camara ? (
-                    <span className="flex items-center gap-1.5"><Image className="w-4 h-4" /> {analysis.nombre_camara}</span>
-                  ) : (
-                    <span className="flex items-center gap-1.5"><Image className="w-4 h-4 text-slate-400" /> SIN CÁMARA</span>
-                  )}
-                  {analysis.ubicacion ? (
-                    <span className="flex items-center gap-1.5 text-red-500"><AlertTriangle className="w-4 h-4" /> {analysis.ubicacion}</span>
-                  ) : (
-                    <span className="flex items-center gap-1.5 text-slate-400"><XCircle className="w-4 h-4" /> Sin ubicación</span>
-                  )}
-                  {analysis.video_duration > 0 && (
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-4 h-4" />
-                      {operationalVideoService.formatDuration(analysis.video_duration)}
-                    </span>
-                  )}
-                </div>
+      <Card variant="elevated" className="p-8 lg:p-10">
+        <div className="flex flex-col justify-between gap-6 md:flex-row md:items-start">
+          <div className="min-w-0 flex-1">
+            <div className="mb-3 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-brand-border bg-brand-soft text-brand">
+                <Activity size={20} aria-hidden="true" />
               </div>
-
-              <div className="flex flex-wrap md:flex-nowrap items-center gap-3 relative z-10 flex-shrink-0">
-                {/* Action buttons */}
-                {isCompleted && analysis.report_pdf_url && (
-                  <a
-                    href={analysis.report_pdf_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2 px-6 py-3 bg-red-500 text-white rounded-full font-bold text-[14px] hover:bg-red-600 shadow-md transition-colors"
-                  >
-                    <Download className="w-4 h-4" />
-                    Descargar Reporte
-                  </a>
-                )}
-
-                {isCancellable && (
-                  <button
-                    onClick={handleCancel}
-                    disabled={cancelling}
-                    className="flex items-center gap-2 px-6 py-3 bg-slate-100 text-slate-700 rounded-full font-bold text-[14px] hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50 transition-colors"
-                  >
-                    {cancelling ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <XCircle className="w-4 h-4" />
-                    )}
-                    Cancelar
-                  </button>
-                )}
-
-                {isError && (
-                  <button
-                    onClick={handleReprocess}
-                    disabled={reprocessing}
-                    className="flex items-center gap-2 px-6 py-3 bg-amber-500 text-white rounded-full font-bold text-[14px] hover:bg-amber-600 shadow-md disabled:opacity-50 transition-colors"
-                  >
-                    {reprocessing ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-4 h-4" />
-                    )}
-                    Reprocesar
-                  </button>
-                )}
-
-                <span
-                  className={`px-5 py-3 rounded-full text-[13px] font-bold uppercase tracking-wide flex items-center gap-2 border shadow-sm ${
-                    isProcessing ? 'bg-amber-50 text-amber-700 border-amber-200/60' :
-                    isCompleted ? 'bg-emerald-500 text-white border-emerald-600 shadow-emerald-500/20' :
-                    isError ? 'bg-rose-50 text-rose-700 border-rose-200/60' :
-                    'bg-slate-50 text-slate-600 border-slate-200/60'
-                  }`}
-                >
-                  {isProcessing && <Loader2 className="w-4 h-4 animate-spin" />}
-                  {isError && <AlertTriangle className="w-4 h-4" />}
-                  {isCancelled && <Ban className="w-4 h-4" />}
-                  {operationalVideoService.getEstadoTexto(analysis.estado)}
-                </span>
-              </div>
+              <span className="text-[13px] font-bold uppercase tracking-wide text-primary">
+                {typeInfo.name}
+              </span>
+              {sseConnected && (
+                <Badge variant="success" className="animate-pulse">
+                  <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
+                  {t('operationalDetail.live')}
+                </Badge>
+              )}
             </div>
+            <h1 className="mb-2 truncate text-3xl font-bold tracking-tight text-foreground lg:text-4xl">
+              {analysis.video_filename}
+            </h1>
+            {analysis.custom_context && (
+              <p className="mt-2 text-base font-medium italic text-muted-foreground">
+                &quot;{analysis.custom_context}&quot;
+              </p>
+            )}
+            <div className="mt-4 flex flex-wrap gap-4 text-[13px] font-bold uppercase tracking-wide text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <Image className="h-4 w-4" aria-hidden="true" />
+                {analysis.nombre_camara || t('operationalDetail.noCamera')}
+              </span>
+              <span
+                className={`flex items-center gap-1.5 ${
+                  analysis.ubicacion ? 'text-warning' : 'text-muted-foreground'
+                }`}
+              >
+                {analysis.ubicacion ? (
+                  <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <XCircle className="h-4 w-4" aria-hidden="true" />
+                )}
+                {analysis.ubicacion || t('operationalDetail.noLocation')}
+              </span>
+              {analysis.video_duration > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-4 w-4" aria-hidden="true" />
+                  {operationalVideoService.formatDuration(analysis.video_duration)}
+                </span>
+              )}
+            </div>
+          </div>
 
-            {/* Progress bar */}
-            {isProcessing && analysis.progress > 0 && (
-              <div className="mt-8 bg-slate-50/50 p-5 rounded-2xl border border-slate-100">
-                <div className="flex justify-between text-[13px] font-bold text-slate-500 mb-2 uppercase tracking-wide">
-                  <span>{analysis.current_phase || 'Procesando...'}</span>
-                  <div className="flex items-center gap-4">
-                    {etaSeconds != null && etaSeconds > 0 && (
-                      <span className="text-red-500 flex items-center gap-1.5">
-                        <Clock className="w-4 h-4" />
-                        ETA: {operationalVideoService.formatETA(etaSeconds)}
-                      </span>
-                    )}
-                    <span className="text-slate-800">{Math.round(analysis.progress)}%</span>
-                  </div>
-                </div>
-                <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-amber-400 to-red-500 rounded-full transition-all duration-500" style={{ width: `${analysis.progress}%` }} />
-                </div>
-              </div>
+          <div className="relative z-10 flex shrink-0 flex-wrap items-center gap-3 md:flex-nowrap">
+            {isCompleted && analysis.report_pdf_url && (
+              <Button asChild>
+                <a href={analysis.report_pdf_url} target="_blank" rel="noopener noreferrer">
+                  <Download aria-hidden="true" />
+                  {t('operationalDetail.downloadReport')}
+                </a>
+              </Button>
             )}
 
-            {/* Cancelled state */}
-            {isCancelled && (
-              <div className="mt-6 p-4 bg-slate-50 border border-slate-200/60 rounded-xl">
-                <p className="text-[14px] font-bold text-slate-600 flex items-center gap-2">
-                  <Ban className="w-5 h-5 text-slate-400" />
-                  Este análisis fue cancelado. Puedes eliminarlo o crear uno nuevo.
-                </p>
-              </div>
+            {isCancellable && (
+              <Button
+                variant="outline"
+                onClick={() => setShowCancelDialog(true)}
+                disabled={cancelling}
+                className="text-error hover:bg-error-surface"
+              >
+                {cancelling ? (
+                  <Loader2 className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <XCircle aria-hidden="true" />
+                )}
+                {t('operationalDetail.cancel')}
+              </Button>
             )}
 
-            {/* Error message */}
-            {isError && analysis.error_message && (
-              <div className="mt-6 p-4 bg-rose-50 border border-rose-200/60 rounded-xl">
-                <p className="text-[14px] font-bold text-rose-700 flex items-center gap-2">
-                  <AlertTriangle className="w-5 h-5" />
-                  {analysis.error_message}
-                </p>
-              </div>
+            {isError && (
+              <Button
+                variant="secondary"
+                className="border-warning-border bg-warning-surface text-warning hover:bg-warning-surface/80"
+                onClick={handleReprocess}
+                loading={reprocessing}
+              >
+                {!reprocessing && <RefreshCw aria-hidden="true" />}
+                {t('operationalDetail.reprocess')}
+              </Button>
             )}
+
+            <StatusBadge
+              status={statusFromEstado(analysis.estado)}
+              label={operationalVideoService.getEstadoTexto(analysis.estado)}
+            />
           </div>
         </div>
 
-        {/* Completed summary + video + heatmap */}
-        {isCompleted && (
-          <>
-          </>
+        {isProcessing && analysis.progress > 0 && (
+          <div
+            className="mt-8 rounded-2xl border border-border bg-muted/50 p-5"
+            aria-live="polite"
+          >
+            <div className="mb-2 flex justify-between text-[13px] font-bold uppercase tracking-wide text-muted-foreground">
+              <span>{analysis.current_phase || t('operationalDetail.processingDefault')}</span>
+              <div className="flex items-center gap-4">
+                {etaSeconds != null && etaSeconds > 0 && (
+                  <span className="flex items-center gap-1.5 text-primary">
+                    <Clock className="h-4 w-4" aria-hidden="true" />
+                    {t('operationalDetail.eta', {
+                      time: operationalVideoService.formatETA(etaSeconds),
+                    })}
+                  </span>
+                )}
+                <span className="text-foreground">{Math.round(analysis.progress)}%</span>
+              </div>
+            </div>
+            <Progress value={analysis.progress} aria-label={t('operationalDetail.processingDefault')} />
+          </div>
         )}
 
-        {/* Events Timeline with Pagination */}
-        {events.length > 0 ? (
-          <div className="bg-white rounded-[32px] shadow-sm border border-slate-200/60 p-8 lg:p-10">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl lg:text-2xl font-bold text-slate-800 flex items-center gap-3">
-                <Image className="w-6 h-6 text-red-500" />
-                Eventos Detectados ({totalEvents})
-              </h2>
-              {/* Pagination controls */}
-              {totalPages > 1 && (
-                <div className="flex items-center gap-3 bg-slate-50 p-1.5 rounded-full border border-slate-200/60">
+        {isCancelled && (
+          <Alert className="mt-6 items-center">
+            <Ban aria-hidden="true" />
+            <AlertDescription className="font-bold text-muted-foreground">
+              {t('operationalDetail.cancelledInfo')}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {isError && analysis.error_message && (
+          <Alert variant="error" className="mt-6">
+            <AlertTriangle aria-hidden="true" />
+            <AlertDescription className="font-bold">{analysis.error_message}</AlertDescription>
+          </Alert>
+        )}
+      </Card>
+
+      {/* Events Timeline with Pagination */}
+      {events.length > 0 ? (
+        <Card variant="elevated" className="p-8 lg:p-10">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="flex items-center gap-3 text-xl font-bold text-foreground lg:text-2xl">
+              <Image className="h-6 w-6 text-primary" aria-hidden="true" />
+              {t('operationalDetail.eventsTitle', { count: totalEvents })}
+            </h2>
+          </div>
+
+          <div className="space-y-4">
+            {events.map((event, idx) => {
+              const isExpanded = expandedEvent === event.id;
+              const globalIdx = (currentPage - 1) * PER_PAGE + idx + 1;
+
+              return (
+                <div
+                  key={event.id}
+                  className={`overflow-hidden rounded-2xl border transition-all duration-300 ${
+                    isExpanded
+                      ? 'border-border bg-muted/30 shadow-card'
+                      : 'border-border hover:shadow-card'
+                  }`}
+                >
                   <button
-                    onClick={() => loadEvents(currentPage - 1)}
-                    disabled={currentPage <= 1}
-                    className="p-1.5 rounded-full bg-white shadow-sm text-slate-500 hover:text-slate-800 disabled:opacity-30 transition-all font-bold"
+                    type="button"
+                    onClick={() => setExpandedEvent(isExpanded ? null : event.id)}
+                    aria-expanded={isExpanded}
+                    className="flex w-full items-center justify-between p-5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring lg:px-6"
                   >
-                    <ChevronLeft className="w-5 h-5" />
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="rounded-full border border-border bg-muted px-3 py-1 font-mono text-[12px] font-bold text-muted-foreground">
+                        #{globalIdx}
+                      </span>
+                      <span className="text-[14px] font-bold tracking-wide text-foreground">
+                        {formatTime(event.timestamp_start)} — {formatTime(event.timestamp_end)}
+                      </span>
+                      <Badge variant="destructive" className="uppercase">
+                        {event.event_type.replace(/_/g, ' ')}
+                      </Badge>
+                      {event.direction && (
+                        <span className="ml-1 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                          {event.direction}
+                        </span>
+                      )}
+                    </div>
+                    <div className="rounded-full bg-muted p-1.5 text-muted-foreground">
+                      {isExpanded ? (
+                        <ChevronUp className="h-5 w-5" aria-hidden="true" />
+                      ) : (
+                        <ChevronDown className="h-5 w-5" aria-hidden="true" />
+                      )}
+                    </div>
                   </button>
-                  <span className="text-[13px] font-bold text-slate-600 px-2 tracking-wide">
-                    Página {currentPage} de {totalPages}
-                  </span>
-                  <button
-                    onClick={() => loadEvents(currentPage + 1)}
-                    disabled={currentPage >= totalPages}
-                    className="p-1.5 rounded-full bg-white shadow-sm text-slate-500 hover:text-slate-800 disabled:opacity-30 transition-all font-bold"
-                  >
-                    <ChevronRight className="w-5 h-5" />
-                  </button>
-                </div>
-              )}
-            </div>
 
-            <div className="space-y-4">
-              {events.map((event, idx) => {
-                const isExpanded = expandedEvent === event.id;
-                const globalIdx = (currentPage - 1) * PER_PAGE + idx + 1;
-
-                return (
-                  <div key={event.id} className={`border rounded-[20px] overflow-hidden transition-all duration-300 ${isExpanded ? 'border-slate-300 shadow-sm bg-slate-50/30' : 'border-slate-200 hover:border-slate-300 hover:shadow-sm'}`}>
-                    {/* Event header */}
-                    <button
-                      onClick={() => setExpandedEvent(isExpanded ? null : event.id)}
-                      className="w-full p-5 lg:px-6 flex items-center justify-between transition-colors outline-none"
-                    >
-                      <div className="flex flex-wrap items-center gap-3">
-                        <span className="text-[12px] font-bold font-mono bg-slate-100 text-slate-500 px-3 py-1 rounded-full border border-slate-200/60 shadow-sm">
-                          #{globalIdx}
-                        </span>
-                        <span className="text-[14px] font-bold text-slate-700 tracking-wide">
-                          {formatTime(event.timestamp_start)} — {formatTime(event.timestamp_end)}
-                        </span>
-                        <span className="px-3 py-1 bg-red-50 text-red-600 border border-red-100/60 font-bold text-[11px] rounded-full uppercase tracking-wider shadow-sm">
-                          {event.event_type.replace(/_/g, ' ')}
-                        </span>
-                        {event.direction && (
-                          <span className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">
-                            <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-                            {event.direction}
-                          </span>
-                        )}
-                      </div>
-                      <div className={`p-1.5 rounded-full transition-colors ${isExpanded ? 'bg-slate-200/60 text-slate-700' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>
-                        {isExpanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
-                      </div>
-                    </button>
-
-                    {/* Event detail */}
-                    {isExpanded && (
-                      <div className="p-5 lg:px-6 pt-0 border-t border-slate-100 mt-2">
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-4">
-                          {/* Info */}
-                          <div className="space-y-4">
-                            {event.person_description && (
-                              <div className="flex items-start gap-3 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                                <User className="w-5 h-5 text-red-400 mt-0.5" />
-                                <div>
-                                  <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Persona</p>
-                                  <p className="text-[14px] font-medium text-slate-700">{event.person_description}</p>
-                                </div>
-                              </div>
-                            )}
-                            {event.carried_objects && (
-                              <div className="flex items-start gap-3 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                                <Package className="w-5 h-5 text-red-400 mt-0.5" />
-                                <div>
-                                  <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Objetos</p>
-                                  <p className="text-[14px] font-medium text-slate-700">{event.carried_objects}</p>
-                                </div>
-                              </div>
-                            )}
-                            {event.confidence && (
-                              <p className="text-[12px] font-bold text-slate-500 tracking-wide uppercase px-1">Confianza: <span className="text-slate-800">{event.confidence}</span></p>
-                            )}
-                            {event.details && Object.keys(event.details).length > 0 && (
-                              <details className="mt-4 p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
-                                <summary className="text-[12px] font-bold text-slate-500 uppercase tracking-wide cursor-pointer hover:text-red-500 flex items-center gap-2">
-                                  Ver meta-datos completos
-                                </summary>
-                                <pre className="mt-4 p-4 bg-slate-50 rounded-xl text-xs text-slate-600 overflow-auto max-h-48 border border-slate-100">
-                                  {JSON.stringify(event.details, null, 2)}
-                                </pre>
-                              </details>
-                            )}
-                          </div>
-
-                          {/* Frames */}
-                          {event.frame_urls && event.frame_urls.length > 0 && (
-                            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                              <p className="text-[11px] font-bold text-slate-500 mb-3 flex items-center gap-1.5 uppercase tracking-widest">
-                                <Image className="w-4 h-4 text-slate-400" />
-                                Capturas ({event.frame_urls.length})
-                              </p>
-                              <div className="grid grid-cols-2 gap-3">
-                                {event.frame_urls.map((url, fIdx) => (
-                                  <a key={fIdx} href={url} target="_blank" rel="noopener noreferrer" className="overflow-hidden rounded-xl border border-slate-200">
-                                    <img
-                                      src={url}
-                                      alt={`Frame ${fIdx + 1}`}
-                                      crossOrigin="use-credentials"
-                                      className="w-full h-32 object-cover hover:scale-105 transition-transform duration-500"
-                                      loading="lazy"
-                                    />
-                                  </a>
-                                ))}
+                  {isExpanded && (
+                    <div className="mt-2 border-t border-border p-5 pt-0 lg:px-6">
+                      <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-2">
+                        <div className="space-y-4">
+                          {event.person_description && (
+                            <div className="flex items-start gap-3 rounded-2xl border border-border bg-card p-4">
+                              <User className="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+                              <div>
+                                <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                                  {t('operationalDetail.person')}
+                                </p>
+                                <p className="text-[14px] font-medium text-foreground">
+                                  {event.person_description}
+                                </p>
                               </div>
                             </div>
                           )}
+                          {event.carried_objects && (
+                            <div className="flex items-start gap-3 rounded-2xl border border-border bg-card p-4">
+                              <Package className="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+                              <div>
+                                <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                                  {t('operationalDetail.objects')}
+                                </p>
+                                <p className="text-[14px] font-medium text-foreground">
+                                  {event.carried_objects}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                          {event.confidence && (
+                            <p className="px-1 text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+                              {t('operationalDetail.confidence', { value: event.confidence })}
+                            </p>
+                          )}
+                          {event.details && Object.keys(event.details).length > 0 && (
+                            <details className="mt-4 rounded-2xl border border-border bg-card p-4">
+                              <summary className="flex cursor-pointer items-center gap-2 text-[12px] font-bold uppercase tracking-wide text-muted-foreground hover:text-primary">
+                                {t('operationalDetail.completeMeta')}
+                              </summary>
+                              <pre className="mt-4 max-h-48 overflow-auto rounded-xl border border-border bg-muted p-4 text-xs text-muted-foreground">
+                                {JSON.stringify(event.details, null, 2)}
+                              </pre>
+                            </details>
+                          )}
                         </div>
+
+                        {event.frame_urls && event.frame_urls.length > 0 && (
+                          <div className="rounded-2xl border border-border bg-card p-4">
+                            <p className="mb-3 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                              <Image className="h-4 w-4" aria-hidden="true" />
+                              {t('operationalDetail.captures', { count: event.frame_urls.length })}
+                            </p>
+                            <div className="grid grid-cols-2 gap-3">
+                              {event.frame_urls.map((url, fIdx) => (
+                                <a
+                                  key={fIdx}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="overflow-hidden rounded-xl border border-border"
+                                >
+                                  <img
+                                    src={url}
+                                    alt={t('operationalDetail.frame', { number: fIdx + 1 })}
+                                    crossOrigin="use-credentials"
+                                    className="h-32 w-full object-cover transition-transform duration-500 hover:scale-105"
+                                    loading="lazy"
+                                  />
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Bottom pagination */}
-            {totalPages > 1 && (
-              <div className="flex justify-center items-center gap-4 mt-8 pt-6 border-t border-slate-100">
-                <button
-                  onClick={() => loadEvents(currentPage - 1)}
-                  disabled={currentPage <= 1}
-                  className="flex items-center gap-2 px-5 py-2.5 text-[14px] font-bold bg-white border border-slate-200/60 shadow-sm rounded-full text-slate-600 hover:text-slate-900 disabled:opacity-40 transition-all"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  Anterior
-                </button>
-                <span className="text-[13px] font-bold text-slate-500 tracking-wide bg-slate-50 px-4 py-2 rounded-full border border-slate-200/60">
-                  {currentPage} de {totalPages}
-                </span>
-                <button
-                  onClick={() => loadEvents(currentPage + 1)}
-                  disabled={currentPage >= totalPages}
-                  className="flex items-center gap-2 px-5 py-2.5 text-[14px] font-bold bg-white border border-slate-200/60 shadow-sm rounded-full text-slate-600 hover:text-slate-900 disabled:opacity-40 transition-all"
-                >
-                  Siguiente
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        ) : isCompleted ? (
-          <div className="bg-white rounded-[32px] shadow-sm border border-slate-200/60 p-12 text-center mb-6">
-            <h3 className="text-2xl font-bold text-slate-800 mb-3 tracking-tight">Análisis Completado sin Eventos</h3>
-            <p className="text-[16px] font-medium text-slate-500">La Inteligencia Artificial no ha detectado eventos o anomalías operativas que reportar en esta franja de video.</p>
-          </div>
-        ) : null}
 
-        {/* Dates */}
-        <div className="mt-8 text-center text-[12px] font-bold text-slate-400 tracking-wide uppercase">
-          Creado: {formatDate(analysis.created_at)}
-          {analysis.completed_at && <> &bull; Completado: {formatDate(analysis.completed_at)}</>}
-          {analysis.tiempo_procesamiento_segundos > 0 && (
-            <> &bull; Procesamiento: {operationalVideoService.formatDuration(analysis.tiempo_procesamiento_segundos)}</>
+          {totalPages > 1 && (
+            <Pagination
+              page={currentPage}
+              totalPages={totalPages}
+              onPageChange={loadEvents}
+              className="mt-8"
+            />
           )}
-        </div>
+        </Card>
+      ) : isCompleted ? (
+        <EmptyState
+          icon={<Activity aria-hidden="true" />}
+          title={t('operationalDetail.completedNoEventsTitle')}
+          description={t('operationalDetail.completedNoEventsDesc')}
+        />
+      ) : null}
+
+      <div className="mt-8 text-center text-[12px] font-bold uppercase tracking-wide text-muted-foreground">
+        {t('operationalDetail.createdAt', { date: formatDateTime(analysis.created_at) })}
+        {analysis.completed_at && (
+          <> &bull; {t('operationalDetail.completedAt', { date: formatDateTime(analysis.completed_at) })}</>
+        )}
+        {analysis.tiempo_procesamiento_segundos > 0 && (
+          <>
+            {' '}
+            &bull;{' '}
+            {t('operationalDetail.processingTime', {
+              time: operationalVideoService.formatDuration(
+                analysis.tiempo_procesamiento_segundos,
+              ),
+            })}
+          </>
+        )}
       </div>
-    </div>
+
+      <ConfirmDialog
+        open={showCancelDialog}
+        onOpenChange={setShowCancelDialog}
+        onConfirm={handleCancel}
+        title={t('operationalDetail.cancelTitle')}
+        description={t('operationalDetail.cancelDescription')}
+        confirmText={t('operationalDetail.cancel')}
+        variant="warning"
+        loading={cancelling}
+      />
+    </PageContainer>
   );
+}
+
+function getErrorText(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return fallback;
 }

@@ -1,40 +1,75 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearch } from '@tanstack/react-router';
-import { operationalVideoService, OperationalAnalysisType, TimeEstimate } from '../services/operationalVideoService';
-import { videoCompressionService, CompressionProgress } from '../services/videoCompressionService';
+import {
+  operationalVideoService,
+  OperationalAnalysisType,
+  TimeEstimate,
+} from '../services/operationalVideoService';
+import {
+  videoCompressionService,
+  type CompressionProgress,
+} from '../services/videoCompressionService';
 import { toast } from 'sonner';
-import { Upload, Activity, AlertCircle, CheckCircle, Loader2, Clock, BarChart3 } from 'lucide-react';
+import {
+  Upload,
+  Activity,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+  Clock,
+  BarChart3,
+} from 'lucide-react';
+import { PageContainer } from '../components/ui/page-container';
+import { PageHeader } from '../components/ui/page-header';
+import { Button } from '../components/ui/button';
+import { Card, CardContent } from '../components/ui/card';
+import { Label } from '../components/ui/label';
+import { Textarea } from '../components/ui/textarea';
+import { Checkbox } from '../components/ui/checkbox';
+import { Badge } from '../components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Progress } from '../components/ui/progress';
+import { useTranslation } from '../i18n';
+
+type UploadStatus =
+  | 'idle'
+  | 'loading-ffmpeg'
+  | 'compressing'
+  | 'uploading'
+  | 'processing'
+  | 'completed';
 
 export default function OperationalUpload() {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const search = useSearch({ strict: false }) as { analysisType?: string };
 
-  // Types
   const [types, setTypes] = useState<Record<string, OperationalAnalysisType>>({});
   const [selectedType, setSelectedType] = useState<string>('');
   const [customContext, setCustomContext] = useState('');
   const [maxContextLength] = useState(2000);
 
-  // File
   const [file, setFile] = useState<File | null>(null);
   const [enableCompression, setEnableCompression] = useState(true);
 
-  // Upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'loading-ffmpeg' | 'compressing' | 'uploading' | 'processing' | 'completed'>('idle');
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
   const [compressionProgress, setCompressionProgress] = useState<CompressionProgress | null>(null);
   const [originalSize, setOriginalSize] = useState(0);
   const [compressedSize, setCompressedSize] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Time estimation
   const [timeEstimate, setTimeEstimate] = useState<TimeEstimate | null>(null);
 
   useEffect(() => {
-    operationalVideoService.listarTipos().then(setTypes).catch(() => {
-      toast.error('Error cargando tipos de análisis');
-    });
+    operationalVideoService
+      .listarTipos()
+      .then(setTypes)
+      .catch(() => {
+        toast.error(t('operationalUpload.toastTypesError'));
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -44,13 +79,15 @@ export default function OperationalUpload() {
     }
   }, [search.analysisType, types]);
 
-  // Estimate processing time when type + file are selected
   useEffect(() => {
     if (selectedType && file) {
-      operationalVideoService.estimarTiempo({
-        analysis_type: selectedType,
-        file_size_mb: file.size / (1024 * 1024),
-      }).then(setTimeEstimate).catch(() => setTimeEstimate(null));
+      operationalVideoService
+        .estimarTiempo({
+          analysis_type: selectedType,
+          file_size_mb: file.size / (1024 * 1024),
+        })
+        .then(setTimeEstimate)
+        .catch(() => setTimeEstimate(null));
     } else {
       setTimeEstimate(null);
     }
@@ -60,19 +97,18 @@ export default function OperationalUpload() {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       if (!selectedFile.type.startsWith('video/')) {
-        toast.error('Por favor selecciona un archivo de video válido');
+        toast.error(t('operationalUpload.toastInvalid'));
         return;
       }
-      const maxSize = 100 * 1024 * 1024 * 1024;
-      if (selectedFile.size > maxSize) {
-        toast.error('El archivo es demasiado grande (máximo 100 GB)');
+      if (selectedFile.size > 100 * 1024 * 1024 * 1024) {
+        toast.error(t('operationalUpload.toastTooLarge'));
         return;
       }
       if (selectedFile.size > 50 * 1024 * 1024 * 1024) {
         setEnableCompression(false);
       }
       setFile(selectedFile);
-      toast.success(`Archivo seleccionado: ${formatFileSize(selectedFile.size)}`);
+      toast.success(t('operationalUpload.toastSelected', { size: formatFileSize(selectedFile.size) }));
     }
   };
 
@@ -80,11 +116,11 @@ export default function OperationalUpload() {
     e.preventDefault();
 
     if (!file) {
-      toast.error('Selecciona un archivo de video');
+      toast.error(t('operationalUpload.toastNoFile'));
       return;
     }
     if (!selectedType) {
-      toast.error('Selecciona un tipo de análisis');
+      toast.error(t('operationalUpload.toastNoType'));
       return;
     }
 
@@ -96,7 +132,6 @@ export default function OperationalUpload() {
     try {
       let fileToUpload = file;
 
-      // Compresión opcional
       if (enableCompression && file.size > 500 * 1024 * 1024) {
         setUploadStatus('loading-ffmpeg');
         await videoCompressionService.initialize((progress) => {
@@ -104,21 +139,22 @@ export default function OperationalUpload() {
         });
 
         setUploadStatus('compressing');
-        toast.info('Comprimiendo video...');
+        toast.info(t('operationalUpload.toastCompressing'));
         const result = await videoCompressionService.compressVideo(file, (progress) => {
           setCompressionProgress(progress);
         });
         fileToUpload = result.compressedFile;
         setCompressedSize(result.compressedSize);
-        toast.success(`Comprimido: ${result.reductionPercent.toFixed(1)}% reducción`);
+        toast.success(
+          t('operationalUpload.toastCompressed', { percent: result.reductionPercent.toFixed(1) }),
+        );
       } else {
         setCompressedSize(file.size);
       }
 
       setUploadStatus('uploading');
 
-      // Paso 1: Iniciar upload
-      toast.info('Iniciando upload...');
+      toast.info(t('operationalUpload.toastInit'));
       const initResponse = await operationalVideoService.iniciarUpload({
         filename: fileToUpload.name,
         content_type: fileToUpload.type,
@@ -127,40 +163,38 @@ export default function OperationalUpload() {
       });
 
       if (!initResponse.success) {
-        throw new Error(initResponse.error || 'Error iniciando upload');
+        throw new Error(initResponse.error || t('operationalUpload.initError'));
       }
 
-      toast.success('Upload iniciado');
+      toast.success(t('operationalUpload.toastInitSuccess'));
 
-      // Paso 2: Subir archivo
-      toast.info('Subiendo archivo...');
+      toast.info(t('operationalUpload.toastUploading'));
       await operationalVideoService.subirArchivoProxy(
         initResponse.analysis_id,
         fileToUpload,
-        (percentage) => setUploadProgress(percentage)
+        (percentage) => setUploadProgress(percentage),
       );
 
-      toast.success('Archivo subido');
+      toast.success(t('operationalUpload.toastUploaded'));
       setUploadStatus('processing');
 
-      // Paso 3: Completar e iniciar análisis
-      toast.info('Iniciando análisis...');
-      const completeResponse = await operationalVideoService.completarUpload(initResponse.analysis_id);
+      toast.info(t('operationalUpload.toastAnalyzing'));
+      const completeResponse = await operationalVideoService.completarUpload(
+        initResponse.analysis_id,
+      );
 
       if (completeResponse.success) {
         setUploadStatus('completed');
-        toast.success('¡Video subido! El análisis comenzará automáticamente.');
+        toast.success(t('operationalUpload.toastCompleted'));
       } else {
-        toast.warning('Video subido pero hubo un problema al iniciar el análisis');
+        toast.warning(t('operationalUpload.toastAnalyzeWarn'));
       }
 
       setTimeout(() => {
         navigate({ to: '/operational' });
       }, 2000);
-
-    } catch (error: any) {
-      console.error('Error en upload:', error);
-      const msg = error.message || 'Error subiendo el video';
+    } catch (error) {
+      const msg = getErrorText(error, t('operationalUpload.error'));
       toast.error(msg);
       setSubmitError(msg);
       setUploading(false);
@@ -173,169 +207,207 @@ export default function OperationalUpload() {
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
   };
 
   const selectedTypeInfo = selectedType ? types[selectedType] : null;
   const contextOverLimit = customContext.length > maxContextLength;
 
-  // ── Progreso: valores computados fuera del JSX ──
   const hasCompression = enableCompression && !!file && file.size > 500 * 1024 * 1024;
-  const allProgressSteps: { key: typeof uploadStatus; label: string }[] = hasCompression
+  const allProgressSteps: { key: UploadStatus; label: string }[] = hasCompression
     ? [
-      { key: 'loading-ffmpeg', label: 'Preparando' },
-      { key: 'compressing', label: 'Comprimiendo' },
-      { key: 'uploading', label: 'Subiendo' },
-      { key: 'processing', label: 'Procesando' },
-      { key: 'completed', label: 'Completado' },
-    ]
+        { key: 'loading-ffmpeg', label: t('operationalUpload.stepPreparing') },
+        { key: 'compressing', label: t('operationalUpload.stepCompressing') },
+        { key: 'uploading', label: t('operationalUpload.stepUploading') },
+        { key: 'processing', label: t('operationalUpload.stepProcessing') },
+        { key: 'completed', label: t('operationalUpload.stepCompleted') },
+      ]
     : [
-      { key: 'uploading', label: 'Subiendo' },
-      { key: 'processing', label: 'Procesando' },
-      { key: 'completed', label: 'Completado' },
-    ];
-  const progressCurrentIdx = allProgressSteps.findIndex(s => s.key === uploadStatus);
+        { key: 'uploading', label: t('operationalUpload.stepUploading') },
+        { key: 'processing', label: t('operationalUpload.stepProcessing') },
+        { key: 'completed', label: t('operationalUpload.stepCompleted') },
+      ];
+  const progressCurrentIdx = allProgressSteps.findIndex((s) => s.key === uploadStatus);
   const progressPct =
-    uploadStatus === 'loading-ffmpeg' ? 5 :
-      uploadStatus === 'compressing' ? 5 + (compressionProgress?.percent ?? 0) * 0.25 :
-        uploadStatus === 'uploading' ? (hasCompression ? 30 : 0) + uploadProgress * (hasCompression ? 0.5 : 0.8) :
-          uploadStatus === 'processing' ? 85 :
-            uploadStatus === 'completed' ? 100 : 0;
+    uploadStatus === 'loading-ffmpeg'
+      ? 5
+      : uploadStatus === 'compressing'
+        ? 5 + (compressionProgress?.percent ?? 0) * 0.25
+        : uploadStatus === 'uploading'
+          ? (hasCompression ? 30 : 0) + uploadProgress * (hasCompression ? 0.5 : 0.8)
+          : uploadStatus === 'processing'
+            ? 85
+            : uploadStatus === 'completed'
+              ? 100
+              : 0;
   const progressLabel =
-    uploadStatus === 'loading-ffmpeg' ? 'Cargando compresor...' :
-      uploadStatus === 'compressing' ? (compressionProgress?.message ?? 'Comprimiendo video...') :
-        uploadStatus === 'uploading' ? `Subiendo video — ${uploadProgress}%` :
-          uploadStatus === 'processing' ? 'Iniciando análisis...' :
-            uploadStatus === 'completed' ? '¡Listo! Redirigiendo...' : '';
+    uploadStatus === 'loading-ffmpeg'
+      ? t('operationalUpload.progressLoading')
+      : uploadStatus === 'compressing'
+        ? compressionProgress?.message ?? t('operationalUpload.progressCompressing')
+        : uploadStatus === 'uploading'
+          ? t('operationalUpload.progressUploading', { percent: uploadProgress })
+          : uploadStatus === 'processing'
+            ? t('operationalUpload.progressProcessing')
+            : uploadStatus === 'completed'
+              ? t('operationalUpload.progressCompleted')
+              : '';
+
+  const stepComplete = (idx: number) =>
+    idx === 0 ? !!selectedType : idx === 1 ? true : idx === 2 ? !!file : false;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex items-center gap-3 mb-2">
-            <Activity className="w-8 h-8 text-tivit-red" />
-            <h1 className="text-3xl font-bold text-gray-800">
-              Nuevo Análisis Operativo
-            </h1>
-          </div>
-          <p className="text-gray-600">
-            Sube un video y define qué quieres saber — la IA analizará el contenido con tu contexto
-          </p>
-        </div>
+    <PageContainer className="max-w-4xl pb-16">
+      <PageHeader
+        icon={Activity}
+        title={t('operationalUpload.title')}
+        description={t('operationalUpload.description')}
+      />
 
-        {/* Step indicator */}
-        <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
-          <div className="flex items-center justify-between">
-            {['Tipo de análisis', 'Contexto', 'Video', 'Confirmar'].map((step, idx) => {
-              const isComplete = idx === 0 ? !!selectedType : idx === 1 ? true : idx === 2 ? !!file : false;
-              return (
-                <div key={step} className="flex items-center gap-2">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-colors ${isComplete ? 'bg-tivit-red text-white' : 'bg-gray-200 text-gray-500'}`}>
-                    {isComplete ? <CheckCircle className="w-4 h-4" /> : idx + 1}
-                  </div>
-                  <span className={`text-sm hidden md:inline ${isComplete ? 'text-red-700 font-medium' : 'text-gray-400'}`}>{step}</span>
-                  {idx < 3 && <div className={`w-8 lg:w-16 h-0.5 ${isComplete ? 'bg-red-400' : 'bg-gray-200'}`} />}
+      {/* Step indicator */}
+      <Card>
+        <CardContent className="flex items-center justify-between p-4">
+          {[
+            t('operationalUpload.stepType'),
+            t('operationalUpload.stepContext'),
+            t('operationalUpload.stepVideo'),
+            t('operationalUpload.stepConfirm'),
+          ].map((step, idx) => {
+            const isComplete = stepComplete(idx);
+            return (
+              <div key={step} className="flex items-center gap-2">
+                <div
+                  className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors ${
+                    isComplete ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+                  }`}
+                >
+                  {isComplete ? (
+                    <CheckCircle className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    idx + 1
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-md p-6">
-          {/* Banner éxito */}
-          {uploadStatus === 'completed' && (
-            <div className="mb-6 bg-green-50 border-2 border-green-500 rounded-lg p-4 animate-pulse">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0" />
-                <div>
-                  <p className="font-semibold text-green-900">¡Video subido exitosamente!</p>
-                  <p className="text-sm text-green-700 mt-1">El análisis comenzará automáticamente. Redirigiendo...</p>
-                </div>
+                <span
+                  className={`hidden text-sm md:inline ${
+                    isComplete ? 'font-medium text-primary' : 'text-muted-foreground'
+                  }`}
+                >
+                  {step}
+                </span>
+                {idx < 3 && (
+                  <div
+                    className={`h-0.5 w-8 lg:w-16 ${isComplete ? 'bg-primary' : 'bg-border'}`}
+                    aria-hidden="true"
+                  />
+                )}
               </div>
-            </div>
-          )}
+            );
+          })}
+        </CardContent>
+      </Card>
 
-          <div className="space-y-6">
+      <Card variant="elevated">
+        <CardContent className="p-6">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {uploadStatus === 'completed' && (
+              <Alert variant="success">
+                <CheckCircle aria-hidden="true" />
+                <AlertTitle>{t('operationalUpload.successBannerTitle')}</AlertTitle>
+                <AlertDescription>{t('operationalUpload.successBannerDesc')}</AlertDescription>
+              </Alert>
+            )}
+
             {/* Tipo de análisis */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Tipo de Análisis *
-              </label>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <Label className="mb-2 block">{t('operationalUpload.typeLabel')} *</Label>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                 {Object.entries(types).map(([key, info]) => (
                   <button
                     key={key}
                     type="button"
                     disabled={uploading}
                     onClick={() => setSelectedType(key)}
-                    className={`p-4 border-2 rounded-lg text-center transition-all ${selectedType === key
-                        ? 'border-tivit-red bg-red-50 ring-2 ring-red-200'
-                        : 'border-gray-200 hover:border-red-300 hover:bg-red-50/50'
-                      } ${uploading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                    aria-pressed={selectedType === key}
+                    className={`rounded-lg border-2 p-4 text-center transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      selectedType === key
+                        ? 'border-primary bg-brand-soft'
+                        : 'border-border hover:border-brand-border hover:bg-brand-soft/40'
+                    } ${uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                   >
-                    <div className="text-2xl mb-1">{info.icon}</div>
-                    <div className="text-sm font-semibold text-gray-800">{info.name}</div>
-                    <div className="text-xs text-gray-500 mt-1">{info.description}</div>
+                    <Activity
+                      className="mx-auto mb-1 h-6 w-6 text-primary"
+                      aria-hidden="true"
+                    />
+                    <div className="text-sm font-semibold text-foreground">{info.name}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{info.description}</div>
                   </button>
                 ))}
               </div>
 
-              {/* Key metrics for selected type */}
-              {selectedTypeInfo && selectedTypeInfo.key_metrics && selectedTypeInfo.key_metrics.length > 0 && (
-                <div className="mt-4 p-3 bg-red-50 rounded-lg border border-red-100">
-                  <p className="text-xs font-medium text-red-700 mb-2 flex items-center gap-1">
-                    <BarChart3 className="w-3 h-3" /> Métricas que obtendrás:
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedTypeInfo.key_metrics.map((metric: string, i: number) => (
-                      <span key={i} className="px-2 py-1 bg-white text-red-700 text-xs rounded-full border border-red-200">
-                        {metric}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {selectedTypeInfo &&
+                selectedTypeInfo.key_metrics &&
+                selectedTypeInfo.key_metrics.length > 0 && (
+                  <Alert className="mt-4">
+                    <BarChart3 aria-hidden="true" />
+                    <AlertDescription>
+                      <p className="mb-2 font-medium">{t('operationalUpload.metricsTitle')}</p>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedTypeInfo.key_metrics.map((metric: string, i: number) => (
+                          <Badge key={i} variant="outline">
+                            {metric}
+                          </Badge>
+                        ))}
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
             </div>
 
             {/* Contexto personalizado */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                ¿Qué quieres saber? (Contexto)
-              </label>
-              <textarea
+              <Label htmlFor="op-context" className="mb-2 block">
+                {t('operationalUpload.contextLabel')}
+              </Label>
+              <Textarea
+                id="op-context"
                 value={customContext}
                 onChange={(e) => setCustomContext(e.target.value)}
                 disabled={uploading}
                 rows={3}
                 maxLength={maxContextLength + 100}
-                placeholder="Ej: Quiero saber cuántas personas entraron y salieron por la puerta principal, cuántas usaron fotcheck, y si hubo accesos no autorizados"
-                className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-tivit-red focus:border-transparent resize-none disabled:opacity-50 transition-colors ${contextOverLimit ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                  }`}
+                placeholder={t('operationalUpload.contextPlaceholder')}
+                invalid={contextOverLimit}
               />
-              <div className="flex justify-between items-center mt-1">
-                <p className="text-xs text-gray-500">
-                  Sé específico — entre más detalle des, mejor será el análisis
+              <div className="mt-1 flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  {t('operationalUpload.contextHint')}
                 </p>
-                <span className={`text-xs font-mono ${contextOverLimit ? 'text-red-600 font-semibold' : customContext.length > maxContextLength * 0.8 ? 'text-yellow-600' : 'text-gray-400'}`}>
+                <span
+                  className={`font-mono text-xs ${
+                    contextOverLimit
+                      ? 'font-semibold text-error'
+                      : customContext.length > maxContextLength * 0.8
+                        ? 'text-warning'
+                        : 'text-muted-foreground'
+                  }`}
+                >
                   {customContext.length}/{maxContextLength}
                 </span>
               </div>
               {contextOverLimit && (
-                <p className="text-xs text-red-600 mt-1">
-                  El contexto excede el límite de {maxContextLength} caracteres
+                <p className="mt-1 text-xs text-error">
+                  {t('operationalUpload.contextOverLimit', { max: maxContextLength })}
                 </p>
               )}
             </div>
 
             {/* Selección de archivo */}
             <div>
-              <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-2">
-                <Upload className="w-4 h-4" />
-                Archivo de Video *
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-red-400 transition-colors">
+              <Label className="mb-2 flex items-center gap-2">
+                <Upload className="h-4 w-4" aria-hidden="true" />
+                {t('operationalUpload.fileLabel')} *
+              </Label>
+              <div className="rounded-lg border-2 border-dashed border-border p-8 text-center transition-colors hover:border-brand-border">
                 <input
                   type="file"
                   accept="video/*"
@@ -346,18 +418,25 @@ export default function OperationalUpload() {
                 />
                 <label
                   htmlFor="op-video-file"
-                  className={`cursor-pointer ${uploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className={`cursor-pointer ${uploading ? 'cursor-not-allowed opacity-50' : ''}`}
                 >
-                  <Upload className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                  <Upload
+                    className="mx-auto mb-3 h-12 w-12 text-muted-foreground"
+                    aria-hidden="true"
+                  />
                   {file ? (
                     <div className="space-y-1">
-                      <p className="text-sm font-medium text-gray-700">{file.name}</p>
-                      <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+                      <p className="text-sm font-medium text-foreground">{file.name}</p>
+                      <p className="text-xs text-muted-foreground">{formatFileSize(file.size)}</p>
                     </div>
                   ) : (
                     <div>
-                      <p className="text-sm text-gray-600">Click para seleccionar un video</p>
-                      <p className="text-xs text-gray-500 mt-1">MP4, MOV, AVI — hasta 100 GB</p>
+                      <p className="text-sm text-muted-foreground">
+                        {t('operationalUpload.selectPrompt')}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {t('operationalUpload.selectHint')}
+                      </p>
                     </div>
                   )}
                 </label>
@@ -366,166 +445,197 @@ export default function OperationalUpload() {
 
             {/* Opción de compresión */}
             {file && file.size > 500 * 1024 * 1024 && (
-              <div className="border rounded-lg p-4 bg-yellow-50 border-yellow-200">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium text-yellow-900">Video grande detectado</p>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
+              <Alert variant="warning">
+                <AlertTitle className="flex items-center justify-between gap-4">
+                  <span>{t('operationalUpload.largeTitle')}</span>
+                  <label className="flex cursor-pointer items-center gap-2">
+                    <Checkbox
                       checked={enableCompression}
-                      onChange={(e) => setEnableCompression(e.target.checked)}
+                      onCheckedChange={(checked) => setEnableCompression(checked === true)}
                       disabled={uploading}
-                      className="w-4 h-4 text-tivit-red rounded"
+                      aria-label={t('operationalUpload.compressLabel')}
                     />
-                    <span className="text-sm text-gray-700">Comprimir antes de subir</span>
+                    <span className="text-sm font-medium text-foreground">
+                      {t('operationalUpload.compressLabel')}
+                    </span>
                   </label>
-                </div>
-              </div>
+                </AlertTitle>
+              </Alert>
             )}
 
             {/* Time Estimation */}
             {timeEstimate && (
-              <div className="p-4 bg-gradient-to-r from-red-50 to-orange-50 rounded-lg border border-red-200">
-                <div className="flex items-start gap-3">
-                  <Clock className="w-5 h-5 text-tivit-red mt-0.5 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="font-semibold text-red-900 text-sm mb-2">Tiempo estimado de procesamiento</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="bg-white/70 rounded-lg p-2 text-center">
-                        <p className="text-xl font-bold text-red-700">
-                          {timeEstimate.estimated_range.min_minutes.toFixed(0)}–{timeEstimate.estimated_range.max_minutes.toFixed(0)}
-                        </p>
-                        <p className="text-xs text-gray-500">min. aprox.</p>
-                      </div>
-                      <div className="bg-white/70 rounded-lg p-2 text-center">
-                        <p className="text-lg font-semibold text-gray-700">{timeEstimate.breakdown.upload_minutes.toFixed(1)}</p>
-                        <p className="text-xs text-gray-500">min subida</p>
-                      </div>
-                      <div className="bg-white/70 rounded-lg p-2 text-center">
-                        <p className="text-lg font-semibold text-gray-700">{timeEstimate.breakdown.analysis_minutes.toFixed(1)}</p>
-                        <p className="text-xs text-gray-500">min análisis</p>
-                      </div>
+              <Alert>
+                <Clock aria-hidden="true" />
+                <AlertDescription>
+                  <p className="mb-2 text-sm font-semibold text-foreground">
+                    {t('operationalUpload.timeTitle')}
+                  </p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-lg bg-card/70 p-2 text-center">
+                      <p className="text-xl font-bold text-primary">
+                        {timeEstimate.estimated_range.min_minutes.toFixed(0)}–
+                        {timeEstimate.estimated_range.max_minutes.toFixed(0)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t('operationalUpload.timeMinutes')}
+                      </p>
                     </div>
-                    <p className="text-xs text-tivit-red mt-2">
-                      Puedes cerrar esta ventana — recibirás una notificación al completarse
-                    </p>
+                    <div className="rounded-lg bg-card/70 p-2 text-center">
+                      <p className="text-lg font-semibold text-foreground">
+                        {timeEstimate.breakdown.upload_minutes.toFixed(1)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t('operationalUpload.timeUpload')}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-card/70 p-2 text-center">
+                      <p className="text-lg font-semibold text-foreground">
+                        {timeEstimate.breakdown.analysis_minutes.toFixed(1)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t('operationalUpload.timeAnalysis')}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              </div>
+                  <p className="mt-2 text-xs text-primary">{t('operationalUpload.timeNote')}</p>
+                </AlertDescription>
+              </Alert>
             )}
 
-            {/* ── Progreso unificado ── */}
+            {/* Progreso unificado */}
             {uploading && (
-              <div className="border border-gray-200 rounded-xl p-5 bg-gray-50 space-y-4">
-                {/* Pasos */}
+              <div className="space-y-4 rounded-xl border border-border bg-muted/50 p-5">
                 <div className="flex items-center justify-between">
                   {allProgressSteps.map((step, idx) => {
                     const done = idx < progressCurrentIdx;
                     const active = idx === progressCurrentIdx;
                     return (
-                      <div key={step.key} className="flex flex-col items-center gap-1 flex-1">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-colors ${done ? 'bg-green-500 text-white' :
-                            active ? 'bg-tivit-red text-white ring-4 ring-red-100' :
-                              'bg-gray-200 text-gray-400'
-                          }`}>
-                          {done ? <CheckCircle className="w-4 h-4" /> :
-                            active ? <Loader2 className="w-4 h-4 animate-spin" /> :
-                              idx + 1}
+                      <div key={step.key} className="flex flex-1 flex-col items-center gap-1">
+                        <div
+                          className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-colors ${
+                            done
+                              ? 'bg-success text-success-foreground'
+                              : active
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          {done ? (
+                            <CheckCircle className="h-4 w-4" aria-hidden="true" />
+                          ) : active ? (
+                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                          ) : (
+                            idx + 1
+                          )}
                         </div>
-                        <span className={`text-xs text-center leading-tight hidden sm:block ${done ? 'text-green-600 font-medium' :
-                            active ? 'text-red-700 font-semibold' :
-                              'text-gray-400'
-                          }`}>{step.label}</span>
+                        <span
+                          className={`hidden text-center text-xs leading-tight sm:block ${
+                            done
+                              ? 'font-medium text-success'
+                              : active
+                                ? 'font-semibold text-primary'
+                                : 'text-muted-foreground'
+                          }`}
+                        >
+                          {step.label}
+                        </span>
                       </div>
                     );
                   })}
                 </div>
 
-                {/* Barra de progreso */}
-                <div>
-                  <div className="flex justify-between text-xs text-gray-500 mb-1">
-                    <span className="font-medium text-gray-700">{progressLabel}</span>
+                <div aria-live="polite">
+                  <div className="mb-1 flex justify-between text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">{progressLabel}</span>
                     <span className="font-mono font-semibold">{Math.round(progressPct)}%</span>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${uploadStatus === 'completed' ? 'bg-green-500' : 'bg-tivit-red'}`}
-                      style={{ width: `${progressPct}%` }}
-                    />
-                  </div>
+                  <Progress
+                    value={progressPct}
+                    indicatorClassName={uploadStatus === 'completed' ? 'bg-success' : undefined}
+                    aria-label={progressLabel}
+                  />
                 </div>
 
-                {/* Ahorro de compresión */}
                 {originalSize > 0 && compressedSize > 0 && compressedSize < originalSize && (
-                  <p className="text-xs text-green-700 text-center">
-                    📦 Ahorro: {((originalSize - compressedSize) / (1024 * 1024)).toFixed(1)} MB tras compresión
+                  <p className="text-center text-xs text-success">
+                    {t('operationalUpload.savings', {
+                      mb: ((originalSize - compressedSize) / (1024 * 1024)).toFixed(1),
+                    })}
                   </p>
                 )}
               </div>
             )}
 
-            {/* Mensaje de error inline */}
             {submitError && (
-              <div className="flex items-start gap-3 bg-red-50 border border-red-300 rounded-lg p-4">
-                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-red-800">Error al subir el video</p>
-                  <p className="text-sm text-red-700 mt-0.5">{submitError}</p>
-                </div>
-              </div>
+              <Alert variant="error">
+                <AlertCircle aria-hidden="true" />
+                <AlertTitle>{t('operationalUpload.errorTitle')}</AlertTitle>
+                <AlertDescription>{submitError}</AlertDescription>
+              </Alert>
             )}
 
-            {/* Mensaje de éxito inline */}
             {uploadStatus === 'completed' && (
-              <div className="flex items-start gap-3 bg-green-50 border border-green-400 rounded-lg p-4">
-                <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-green-800">¡Video subido correctamente!</p>
-                  <p className="text-sm text-green-700 mt-0.5">El análisis comenzará automáticamente. Redirigiendo...</p>
-                </div>
-              </div>
+              <Alert variant="success">
+                <CheckCircle aria-hidden="true" />
+                <AlertTitle>{t('operationalUpload.successTitle')}</AlertTitle>
+                <AlertDescription>{t('operationalUpload.successDesc')}</AlertDescription>
+              </Alert>
             )}
 
             {/* Botones */}
             <div className="flex gap-4 pt-4">
-              <button
+              <Button
                 type="submit"
+                variant={uploadStatus === 'completed' ? 'success' : 'default'}
                 disabled={uploading || !file || !selectedType || contextOverLimit}
-                className={`flex-1 py-3 px-6 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${uploadStatus === 'completed'
-                    ? 'bg-green-600 hover:bg-green-700 text-white'
-                    : 'bg-tivit-red hover:bg-tivit-red-dark text-white disabled:opacity-50 disabled:cursor-not-allowed'
-                  }`}
+                loading={uploading && uploadStatus !== 'completed'}
+                className="flex-1"
               >
-                {uploadStatus === 'loading-ffmpeg' && <><Loader2 className="w-5 h-5 animate-spin" />Cargando FFmpeg...</>}
-                {uploadStatus === 'compressing' && <><Loader2 className="w-5 h-5 animate-spin" />Comprimiendo...</>}
-                {uploadStatus === 'uploading' && <><Loader2 className="w-5 h-5 animate-spin" />Subiendo...</>}
-                {uploadStatus === 'processing' && <><Loader2 className="w-5 h-5 animate-spin" />Procesando...</>}
-                {uploadStatus === 'completed' && <><CheckCircle className="w-5 h-5" />Completado</>}
-                {uploadStatus === 'idle' && 'Subir y Analizar'}
-              </button>
-              <button
+                {uploadStatus === 'completed'
+                  ? t('operationalUpload.completed')
+                  : uploadStatus === 'idle'
+                    ? t('operationalUpload.submit')
+                    : uploadStatus === 'loading-ffmpeg'
+                      ? t('operationalUpload.loadingFfmpeg')
+                      : uploadStatus === 'compressing'
+                        ? t('operationalUpload.compressing')
+                        : uploadStatus === 'uploading'
+                          ? t('operationalUpload.uploading')
+                          : t('operationalUpload.processing')}
+              </Button>
+              <Button
                 type="button"
+                variant="outline"
                 onClick={() => navigate({ to: '/operational' })}
                 disabled={uploading}
-                className="px-6 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
               >
-                Cancelar
-              </button>
+                {t('operationalUpload.cancel')}
+              </Button>
             </div>
-          </div>
-        </form>
+          </form>
+        </CardContent>
+      </Card>
 
-        {/* Info */}
-        <div className="mt-6 bg-gray-50 rounded-lg p-4">
-          <h3 className="font-semibold text-gray-800 mb-2">Información importante:</h3>
-          <ul className="text-sm text-gray-600 space-y-1 list-disc ml-5">
-            <li>Los reportes incluyen capturas HD de cada evento detectado</li>
-            <li>Cada evento tiene: descripción, dirección, objetos, timestamp y frames</li>
-            <li>El análisis consolida todos los segmentos en un reporte unificado</li>
-            <li>Los videos se guardan por 7 días y los reportes por 30 días</li>
+      <Card>
+        <CardContent className="p-4">
+          <h3 className="mb-2 font-semibold text-foreground">{t('operationalUpload.infoTitle')}</h3>
+          <ul className="ml-5 list-disc space-y-1 text-sm text-muted-foreground">
+            <li>{t('operationalUpload.info1')}</li>
+            <li>{t('operationalUpload.info2')}</li>
+            <li>{t('operationalUpload.info3')}</li>
+            <li>{t('operationalUpload.info4')}</li>
           </ul>
-        </div>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </PageContainer>
   );
+}
+
+function getErrorText(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return fallback;
 }

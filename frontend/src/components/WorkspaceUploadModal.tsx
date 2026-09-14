@@ -2,7 +2,11 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBaseUrl } from '../lib/backendUrl';
 import { Upload, FileVideo, Trash2, AlertCircle, Plus } from 'lucide-react';
 import { Button } from './ui/button';
+import { Progress } from './ui/progress';
+import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
+import { cn } from '../lib/utils';
+import { useTranslation } from '../i18n';
 
 interface FileWithPreview {
     file: File;
@@ -19,7 +23,7 @@ interface WorkspaceUploadModalProps {
 }
 
 const MAX_FILES = 5;
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
 const VALID_EXTENSIONS = ['mp4', 'avi', 'mov', 'mkv', 'webm'];
 
 export function WorkspaceUploadModal({
@@ -29,6 +33,7 @@ export function WorkspaceUploadModal({
     workspaceName,
     onBatchUploadSuccess,
 }: WorkspaceUploadModalProps) {
+    const { t } = useTranslation();
     const [files, setFiles] = useState<FileWithPreview[]>([]);
     const [uploading, setUploading] = useState(false);
     const [progress, setProgress] = useState(0);
@@ -37,19 +42,18 @@ export function WorkspaceUploadModal({
 
     const inputRef = useRef<HTMLInputElement>(null);
 
-    // Cleanup preview URLs on unmount
     useEffect(() => {
         return () => {
-            files.forEach(f => {
+            files.forEach((f) => {
                 if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
             });
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Reset on close
     useEffect(() => {
         if (!open) {
-            files.forEach(f => {
+            files.forEach((f) => {
                 if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
             });
             setFiles([]);
@@ -57,58 +61,65 @@ export function WorkspaceUploadModal({
             setProgress(0);
             setUploading(false);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
-    const validateFile = useCallback((file: File): string | null => {
-        const extension = file.name.split('.').pop()?.toLowerCase();
-        if (!VALID_EXTENSIONS.includes(extension || '')) {
-            return `"${file.name}": Formato no soportado.`;
-        }
-        if (file.size > MAX_FILE_SIZE) {
-            return `"${file.name}": Excede 100MB.`;
-        }
-        return null;
-    }, []);
-
-    const addFiles = useCallback((newFiles: FileList | File[]) => {
-        const fileArray = Array.from(newFiles);
-        const errors: string[] = [];
-        const validFiles: FileWithPreview[] = [];
-
-        for (const file of fileArray) {
-            const validationError = validateFile(file);
-            if (validationError) {
-                errors.push(validationError);
-                continue;
+    const validateFile = useCallback(
+        (file: File): string | null => {
+            const extension = file.name.split('.').pop()?.toLowerCase();
+            if (!VALID_EXTENSIONS.includes(extension || '')) {
+                return t('uploadModal.unsupportedFormat', { name: file.name });
             }
-            validFiles.push({
-                file,
-                id: crypto.randomUUID(),
-                previewUrl: URL.createObjectURL(file),
+            if (file.size > MAX_FILE_SIZE) {
+                return t('uploadModal.exceedsSize', { name: file.name });
+            }
+            return null;
+        },
+        [t],
+    );
+
+    const addFiles = useCallback(
+        (newFiles: FileList | File[]) => {
+            const fileArray = Array.from(newFiles);
+            const errors: string[] = [];
+            const validFiles: FileWithPreview[] = [];
+
+            for (const file of fileArray) {
+                const validationError = validateFile(file);
+                if (validationError) {
+                    errors.push(validationError);
+                    continue;
+                }
+                validFiles.push({
+                    file,
+                    id: crypto.randomUUID(),
+                    previewUrl: URL.createObjectURL(file),
+                });
+            }
+
+            setFiles((prev) => {
+                const combined = [...prev, ...validFiles];
+                if (combined.length > MAX_FILES) {
+                    errors.push(t('uploadModal.maxFiles'));
+                    return combined.slice(0, MAX_FILES);
+                }
+                return combined;
             });
-        }
 
-        setFiles(prev => {
-            const combined = [...prev, ...validFiles];
-            if (combined.length > MAX_FILES) {
-                errors.push('Ya tiene 5 videos analizando, espere que concluyan para enviar más');
-                return combined.slice(0, MAX_FILES);
+            if (errors.length > 0) {
+                setError(errors.join(' '));
+            } else {
+                setError(null);
             }
-            return combined;
-        });
-
-        if (errors.length > 0) {
-            setError(errors.join(' '));
-        } else {
-            setError(null);
-        }
-    }, [validateFile]);
+        },
+        [validateFile, t],
+    );
 
     const removeFile = useCallback((id: string) => {
-        setFiles(prev => {
-            const file = prev.find(f => f.id === id);
+        setFiles((prev) => {
+            const file = prev.find((f) => f.id === id);
             if (file?.previewUrl) URL.revokeObjectURL(file.previewUrl);
-            return prev.filter(f => f.id !== id);
+            return prev.filter((f) => f.id !== id);
         });
         setError(null);
     }, []);
@@ -116,9 +127,9 @@ export function WorkspaceUploadModal({
     const handleDrag = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        if (e.type === "dragenter" || e.type === "dragover") {
+        if (e.type === 'dragenter' || e.type === 'dragover') {
             setDragActive(true);
-        } else if (e.type === "dragleave") {
+        } else if (e.type === 'dragleave') {
             setDragActive(false);
         }
     };
@@ -137,7 +148,6 @@ export function WorkspaceUploadModal({
         if (e.target.files && e.target.files.length > 0) {
             addFiles(e.target.files);
         }
-        // Reset input so same file can be re-selected
         if (inputRef.current) inputRef.current.value = '';
     };
 
@@ -150,9 +160,8 @@ export function WorkspaceUploadModal({
 
         const baseUrl = import.meta.env.VITE_API_BASE_URL || getApiBaseUrl();
 
-        // All uploads go through batch endpoint (single or multiple)
         const formData = new FormData();
-        files.forEach(f => formData.append('videos', f.file));
+        files.forEach((f) => formData.append('videos', f.file));
         formData.append('workspace_id', workspaceId);
 
         const xhr = new XMLHttpRequest();
@@ -166,12 +175,17 @@ export function WorkspaceUploadModal({
             }
         };
 
-        xhr.onload = function () {
+        xhr.onload = () => {
             if (xhr.status === 200 || xhr.status === 201 || xhr.status === 202) {
                 try {
-                    const response = JSON.parse(xhr.responseText);
+                    const response = JSON.parse(xhr.responseText) as {
+                        success?: boolean;
+                        batch_id?: string;
+                        videos?: Array<{ video_id: string }>;
+                        error?: string;
+                    };
                     if (response.success && response.batch_id) {
-                        const videoIds = response.videos?.map((v: { video_id: string }) => v.video_id) || [];
+                        const videoIds = response.videos?.map((v) => v.video_id) || [];
                         if (onBatchUploadSuccess) {
                             onBatchUploadSuccess(response.batch_id, videoIds);
                         }
@@ -179,11 +193,11 @@ export function WorkspaceUploadModal({
                         setUploading(false);
                         setProgress(0);
                     } else {
-                        setError(response.error || 'Error al subir los videos');
+                        setError(response.error || t('uploadModal.uploadError'));
                         setUploading(false);
                     }
                 } catch {
-                    setError('Error al procesar la respuesta');
+                    setError(t('uploadModal.parseError'));
                     setUploading(false);
                 }
             } else if (xhr.status === 401) {
@@ -193,17 +207,17 @@ export function WorkspaceUploadModal({
                 setUploading(false);
             } else {
                 try {
-                    const response = JSON.parse(xhr.responseText);
-                    setError(response.error || 'Error al subir los videos');
+                    const response = JSON.parse(xhr.responseText) as { error?: string };
+                    setError(response.error || t('uploadModal.uploadError'));
                 } catch {
-                    setError('Error al subir los videos');
+                    setError(t('uploadModal.uploadError'));
                 }
                 setUploading(false);
             }
         };
 
         xhr.onerror = () => {
-            setError('Error de red al subir los videos');
+            setError(t('uploadModal.networkError'));
             setUploading(false);
         };
 
@@ -214,28 +228,31 @@ export function WorkspaceUploadModal({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-3xl bg-white max-h-[90vh] overflow-y-auto sm:rounded-[24px] border-slate-100 shadow-2xl p-8 gap-6 animate-in zoom-in-95 duration-300">
+            <DialogContent className="max-h-[90vh] max-w-3xl gap-6 overflow-y-auto p-8">
                 <DialogHeader className="space-y-3">
-                    <DialogTitle className="text-2xl font-bold text-slate-800 flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-2xl bg-slate-800 flex items-center justify-center shadow-sm">
-                            <Upload className="w-6 h-6 text-white" />
+                    <DialogTitle className="flex items-center gap-3 text-2xl font-bold">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-foreground shadow-sm">
+                            <Upload className="h-6 w-6 text-primary-foreground" aria-hidden="true" />
                         </div>
-                        Subir Video{files.length > 1 ? 's' : ''} al Proyecto
+                        {files.length > 1
+                            ? t('uploadModal.titleWithCount', { count: files.length })
+                            : t('uploadModal.title')}
                     </DialogTitle>
-                    <DialogDescription className="text-slate-500 text-[15px] leading-relaxed">
-                        Arrastra archivos de video o haz clic para seleccionar. Hasta {MAX_FILES} videos simultáneos hacia el proyecto <span className="font-semibold text-slate-700">"{workspaceName}"</span>.
+                    <DialogDescription className="text-[15px] leading-relaxed text-muted-foreground">
+                        {t('uploadModal.description', { max: MAX_FILES, name: workspaceName })}
                     </DialogDescription>
                 </DialogHeader>
 
-                <div className="mt-2 text-slate-800">
-                    {/* Drop zone */}
+                <div>
                     {files.length < MAX_FILES && (
                         <div
-                            className={`relative border-2 border-dashed rounded-[20px] transition-all duration-300 flex flex-col items-center justify-center ${files.length === 0 ? 'p-16' : 'p-8'
-                                } ${dragActive
-                                    ? 'border-blue-500 bg-blue-50/50 scale-[1.02]'
-                                    : 'border-slate-300 bg-slate-50 hover:bg-slate-100/50 hover:border-slate-400'
-                                }`}
+                            className={cn(
+                                'relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed transition-all duration-300',
+                                files.length === 0 ? 'p-16' : 'p-8',
+                                dragActive
+                                    ? 'scale-[1.02] border-primary bg-brand-soft'
+                                    : 'border-border bg-muted/40 hover:border-primary/50 hover:bg-muted/60',
+                            )}
                             onDragEnter={handleDrag}
                             onDragLeave={handleDrag}
                             onDragOver={handleDrag}
@@ -252,90 +269,107 @@ export function WorkspaceUploadModal({
 
                             {files.length === 0 ? (
                                 <>
-                                    <div className={`mx-auto w-16 h-16 rounded-2xl flex items-center justify-center mb-5 transition-all duration-300 shadow-sm ${dragActive ? 'bg-blue-100 text-blue-600 scale-110' : 'bg-white border border-slate-200 text-slate-500'
-                                        }`}>
-                                        <Upload size={28} />
-                                    </div>
-                                    <h3 className="text-[19px] font-bold text-slate-800 mb-2">
-                                        {dragActive ? '¡Suelta tus videos aquí!' : 'Arrastra tus videos aquí'}
-                                    </h3>
-                                    <p className="text-slate-500 text-[15px] mb-6">o utiliza el botón para buscar en tu equipo</p>
-                                    <Button
-                                        onClick={() => inputRef.current?.click()}
-                                        className="bg-slate-800 hover:bg-slate-700 text-white px-8 py-2.5 rounded-full font-medium shadow-md transition-all hover:shadow-lg hover:-translate-y-0.5 text-[15px]"
+                                    <div
+                                        className={cn(
+                                            'mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl shadow-sm transition-all duration-300',
+                                            dragActive
+                                                ? 'scale-110 bg-brand-soft text-primary'
+                                                : 'border border-border bg-card text-muted-foreground',
+                                        )}
                                     >
-                                        Seleccionar Archivos
+                                        <Upload size={28} aria-hidden="true" />
+                                    </div>
+                                    <h3 className="mb-2 text-[19px] font-bold text-foreground">
+                                        {dragActive ? t('uploadModal.dropActive') : t('uploadModal.dropTitle')}
+                                    </h3>
+                                    <p className="mb-6 text-[15px] text-muted-foreground">{t('uploadModal.orClick')}</p>
+                                    <Button onClick={() => inputRef.current?.click()}>
+                                        {t('uploadModal.selectFiles')}
                                     </Button>
 
-                                    <div className="mt-8 pt-6 border-t border-slate-200/60 w-full max-w-sm text-center">
-                                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Formatos Soportados</p>
-                                        <div className="flex gap-2 justify-center flex-wrap">
+                                    <div className="mt-8 w-full max-w-sm border-t border-border pt-6 text-center">
+                                        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                            {t('uploadModal.supportedFormats')}
+                                        </p>
+                                        <div className="flex flex-wrap justify-center gap-2">
                                             {['MP4', 'AVI', 'MOV', 'MKV', 'WEBM'].map((ext) => (
-                                                <span key={ext} className="px-2.5 py-1 bg-white border border-slate-200/80 rounded-lg text-xs font-bold text-slate-500 shadow-sm">
+                                                <span
+                                                    key={ext}
+                                                    className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-bold text-muted-foreground shadow-sm"
+                                                >
                                                     {ext}
                                                 </span>
                                             ))}
                                         </div>
-                                        <p className="text-xs text-slate-400 mt-4 font-medium">Límite: {MAX_FILES} videos, 100MB por archivo, 60s máx</p>
+                                        <p className="mt-4 text-xs font-medium text-muted-foreground">
+                                            {t('uploadModal.limitInfo', { max: MAX_FILES })}
+                                        </p>
                                     </div>
                                 </>
                             ) : (
                                 <div className="text-center">
-                                    <div className="mx-auto w-12 h-12 rounded-xl bg-white border border-slate-200 flex items-center justify-center mb-3 text-slate-400 shadow-sm">
-                                        <Plus size={24} />
+                                    <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card text-muted-foreground shadow-sm">
+                                        <Plus size={24} aria-hidden="true" />
                                     </div>
-                                    <p className="text-[15px] text-slate-600 font-medium mb-4">Arrastra más videos o haz clic</p>
-                                    <Button
-                                        onClick={() => inputRef.current?.click()}
-                                        variant="outline"
-                                        className="rounded-full font-medium border-slate-300 text-slate-700 bg-white hover:bg-slate-50"
-                                    >
-                                        Agregar más archivos
+                                    <p className="mb-4 text-[15px] font-medium text-muted-foreground">
+                                        {t('uploadModal.addMore')}
+                                    </p>
+                                    <Button variant="outline" onClick={() => inputRef.current?.click()}>
+                                        {t('uploadModal.addMoreButton')}
                                     </Button>
                                 </div>
                             )}
                         </div>
                     )}
 
-                    {/* File list */}
                     {files.length > 0 && (
                         <div className="mt-6 space-y-3">
-                            <div className="flex items-center justify-between mb-3 px-1">
-                                <span className="text-[15px] font-bold text-slate-700">
-                                    {files.length} video{files.length > 1 ? 's' : ''} seleccionado{files.length > 1 ? 's' : ''}
-                                    <span className="text-slate-400 font-medium ml-2">
-                                        ({(totalSize / (1024 * 1024)).toFixed(1)} MB)
-                                    </span>
+                            <div className="mb-3 flex items-center justify-between px-1">
+                                <span className="text-[15px] font-bold text-foreground">
+                                    {t('uploadModal.selectedCount', {
+                                        count: files.length,
+                                        size: (totalSize / (1024 * 1024)).toFixed(1),
+                                    })}
                                 </span>
                                 {files.length >= MAX_FILES && (
-                                    <span className="text-[13px] text-amber-600 font-bold bg-amber-50 px-3 py-1 rounded-full border border-amber-200/60">
-                                        Límite Completado
+                                    <span className="rounded-full border border-warning-border bg-warning-surface px-3 py-1 text-[13px] font-bold text-warning">
+                                        {t('uploadModal.limitReached')}
                                     </span>
                                 )}
                             </div>
 
-                            <div className="max-h-56 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                            <div className="max-h-56 space-y-2 overflow-y-auto pr-2">
                                 {files.map((f, idx) => (
-                                    <div key={f.id} className="flex items-center gap-4 p-4 bg-white rounded-2xl border border-slate-200 flex-row shadow-sm group hover:border-slate-300 transition-colors">
-                                        <div className="w-10 h-10 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center flex-shrink-0">
-                                            <FileVideo className="w-5 h-5 text-slate-400" />
+                                    <div
+                                        key={f.id}
+                                        className="group flex items-center gap-4 rounded-2xl border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/50"
+                                    >
+                                        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-border bg-muted/40">
+                                            <FileVideo className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
                                         </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-[15px] font-semibold text-slate-800 truncate" title={f.file.name}>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="truncate text-[15px] font-semibold text-foreground" title={f.file.name}>
                                                 {f.file.name}
                                             </p>
-                                            <p className="text-xs font-medium text-slate-400 mt-0.5">
-                                                {(f.file.size / (1024 * 1024)).toFixed(1)} MB
+                                            <p className="mt-0.5 text-xs font-medium text-muted-foreground">
+                                                {t('uploadModal.sizeMb', {
+                                                    size: (f.file.size / (1024 * 1024)).toFixed(1),
+                                                })}
                                             </p>
                                         </div>
-                                        <span className="text-xs font-bold text-slate-300 flex-shrink-0 w-8 text-right">#{idx + 1}</span>
+                                        <span className="w-8 flex-shrink-0 text-right text-xs font-bold text-muted-foreground">
+                                            #{idx + 1}
+                                        </span>
                                         {!uploading && (
-                                            <button
+                                            <Button
+                                                variant="ghost"
+                                                size="icon-sm"
                                                 onClick={() => removeFile(f.id)}
-                                                className="p-2 ml-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                                aria-label={t('audioUpload.remove')}
+                                                className="opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                                             >
-                                                <Trash2 size={18} />
-                                            </button>
+                                                <Trash2 aria-hidden="true" />
+                                            </Button>
                                         )}
                                     </div>
                                 ))}
@@ -343,65 +377,59 @@ export function WorkspaceUploadModal({
                         </div>
                     )}
 
-                    {/* Upload progress */}
                     {uploading && (
-                        <div className="mt-6 space-y-4 p-6 bg-slate-50 rounded-[20px] border border-slate-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <div className="flex justify-between items-end">
+                        <div className="mt-6 space-y-4 rounded-2xl border border-border bg-muted/40 p-6 shadow-sm">
+                            <div className="flex items-end justify-between">
                                 <div>
-                                    <span className="block font-bold text-slate-800 text-lg mb-1">
-                                        Analizando...
+                                    <span className="mb-1 block text-lg font-bold text-foreground">
+                                        {t('uploadModal.analyzing')}
                                     </span>
-                                    <span className="text-sm font-medium text-slate-500">
-                                        Subiendo {files.length} video{files.length > 1 ? 's' : ''} a la plataforma
+                                    <span className="text-sm font-medium text-muted-foreground">
+                                        {t('uploadModal.uploadingDesc', { count: files.length })}
                                     </span>
                                 </div>
-                                <span className="font-mono text-2xl font-black text-slate-800 tracking-tight">{progress}%</span>
+                                <span className="font-mono text-2xl font-black tracking-tight text-foreground">
+                                    {progress}%
+                                </span>
                             </div>
-                            <div className="h-3 w-full bg-slate-200/60 rounded-full overflow-hidden">
-                                <div
-                                    className="h-full bg-slate-800 transition-all duration-300 rounded-full"
-                                    style={{ width: `${progress}%` }}
-                                />
-                            </div>
-                            <p className="text-[13px] font-medium text-slate-400 flex items-center justify-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
-                                {progress < 100 ? 'Por favor no cierres esta ventana' : 'Encolando procesamiento en el servidor...'}
+                            <Progress value={progress} aria-label={t('uploadModal.analyzing')} />
+                            <p className="flex items-center justify-center gap-2 text-[13px] font-medium text-muted-foreground" aria-live="polite">
+                                <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
+                                {progress < 100 ? t('uploadModal.doNotClose') : t('uploadModal.queuing')}
                             </p>
                         </div>
                     )}
 
-                    {/* Error display */}
                     {error && (
-                        <div className="mt-6 flex items-start gap-3 text-rose-700 bg-rose-50 px-5 py-4 rounded-2xl border border-rose-200 shadow-sm animate-in fade-in">
-                            <AlertCircle size={20} className="flex-shrink-0 mt-0.5" />
-                            <span className="text-[15px] font-semibold">{error}</span>
-                        </div>
+                        <Alert variant="error" className="mt-6">
+                            <AlertCircle aria-hidden="true" />
+                            <AlertTitle>{t('common.error')}</AlertTitle>
+                            <AlertDescription>{error}</AlertDescription>
+                        </Alert>
                     )}
 
-                    {/* Actions */}
                     {!uploading && files.length > 0 && (
-                        <div className="mt-8 flex gap-3 justify-end pt-5 border-t border-slate-100">
+                        <div className="mt-8 flex justify-end gap-3 border-t border-border pt-5">
                             <Button
+                                variant="ghost"
                                 onClick={() => {
-                                    files.forEach(f => { if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+                                    files.forEach((f) => {
+                                        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+                                    });
                                     setFiles([]);
                                     setError(null);
                                 }}
-                                variant="ghost"
-                                className="px-6 rounded-full font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100"
                             >
-                                Limpiar todo
+                                {t('uploadModal.clearAll')}
                             </Button>
-                            <Button
-                                onClick={handleUpload}
-                                className="bg-slate-800 hover:bg-slate-700 text-white px-8 py-2.5 rounded-full font-medium shadow-md transition-all hover:shadow-lg hover:-translate-y-0.5 text-[15px] flex items-center gap-2"
-                            >
-                                <Upload size={18} />
-                                {files.length === 1 ? 'Subir Video' : `Subir ${files.length} Videos`}
+                            <Button onClick={() => void handleUpload()}>
+                                <Upload aria-hidden="true" />
+                                {files.length === 1
+                                    ? t('uploadModal.uploadOne')
+                                    : t('uploadModal.uploadMany', { count: files.length })}
                             </Button>
                         </div>
                     )}
-
                 </div>
             </DialogContent>
         </Dialog>

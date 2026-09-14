@@ -1,321 +1,371 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, Link } from '@tanstack/react-router';
 import { apiRequest } from '../lib/api';
-import { Loader2, AlertCircle, Video, Type, Tag, CheckCircle2, XCircle, Clock, ChevronLeft } from 'lucide-react';
+import {
+  Video as VideoIcon,
+  Type,
+  Tag,
+  ChevronLeft,
+  Play,
+  Clock,
+} from 'lucide-react';
 import { Button } from '../components/ui/button';
+import { Card } from '../components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import { LoadingState } from '../components/ui/loading-state';
+import { ErrorState } from '../components/ui/error-state';
+import { EmptyState } from '../components/ui/empty-state';
+import { useTranslation } from '../i18n';
 
 interface Shot {
-    start_time: number;
-    end_time: number;
-    start_formatted: string;
-    end_formatted: string;
-    shot_number: number;
+  start_time: number;
+  end_time: number;
+  start_formatted: string;
+  end_formatted: string;
+  shot_number: number;
+}
+
+interface LabelItem {
+  entity?: { description?: string };
+  description?: string;
+  confidence?: number;
 }
 
 interface VideoDetails {
-    id: string;
-    titulo: string;
-    descripcion: string;
-    estado: string;
-    video_url?: string;
-    fecha_carga?: string;
-    fecha_procesamiento?: string;
-    resultado_ia?: string;
-    confianza?: number;
-    razon?: string;
-    analisis?: string;
-    shots: Shot[];
-    texto_detectado: string[];
-    labels: any[];
+  id: string;
+  titulo: string;
+  descripcion: string;
+  estado: string;
+  video_url?: string;
+  fecha_carga?: string;
+  fecha_procesamiento?: string;
+  resultado_ia?: string;
+  confianza?: number;
+  razon?: string;
+  analisis?: string;
+  shots: Shot[];
+  texto_detectado: string[];
+  labels: unknown[];
 }
 
+const statusFromRaw = (raw?: string): AppStatus => {
+  const status = (raw || '').toUpperCase();
+  if (status.includes('APROBADO')) return 'approved';
+  if (status.includes('RECHAZADO')) return 'rejected';
+  if (status.includes('PROCES')) return 'processing';
+  return 'pending';
+};
+
 export default function VideoDetailsPage() {
-    const { videoId } = useParams({ from: '/app/video/$videoId' });
-    const [loading, setLoading] = useState(true);
-    const [details, setDetails] = useState<VideoDetails | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<'summary' | 'shots' | 'text' | 'labels'>('summary');
-    const videoRef = useRef<HTMLVideoElement>(null);
+  const { videoId } = useParams({ from: '/app/video/$videoId' });
+  const { t, formatDate } = useTranslation();
+  const [loading, setLoading] = useState(true);
+  const [details, setDetails] = useState<VideoDetails | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'summary' | 'shots' | 'text' | 'labels'>(
+    'summary',
+  );
+  const videoRef = useRef<HTMLVideoElement>(null);
 
-    useEffect(() => {
-        if (videoId) {
-            fetchDetails(videoId);
-        }
-    }, [videoId]);
-
-    const fetchDetails = async (id: string) => {
-        setLoading(true);
-        setError(null);
-        try {
-            const response = await apiRequest<{ success: boolean; video: VideoDetails }>(`/socio/video/${id}/details`);
-            if (response?.success) {
-                setDetails(response.video);
-            } else {
-                setError('No se pudieron cargar los detalles del video.');
-            }
-        } catch (e) {
-            console.error(e);
-            if (e instanceof Error && e.message) {
-                setError(e.message);
-            } else {
-                setError('Error de conexión al obtener detalles.');
-            }
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const jumpToTime = (time: number) => {
-        if (videoRef.current) {
-            videoRef.current.currentTime = time;
-            videoRef.current.play();
-        }
-    };
-
-    const getStatusBadge = () => {
-        if (!details) return null;
-        const status = details.resultado_ia || details.estado;
-
-        if (status === 'APROBADO' || status === 'aprobado') {
-            return <div className="flex items-center gap-1 bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold"><CheckCircle2 size={14} /> APROBADO</div>;
-        } else if (status === 'RECHAZADO' || status === 'rechazado') {
-            return <div className="flex items-center gap-1 bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-bold"><XCircle size={14} /> RECHAZADO</div>;
-        } else {
-            return <div className="flex items-center gap-1 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-xs font-bold"><Clock size={14} /> {status}</div>;
-        }
-    };
-
-    if (loading) {
-        return (
-            <div className="flex items-center justify-center h-screen bg-gray-50">
-                <span className="loader"></span>
-            </div>
-        );
+  useEffect(() => {
+    if (videoId) {
+      fetchDetails(videoId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]);
 
-    if (error) {
-        return (
-            <div className="flex flex-col items-center justify-center h-screen bg-gray-50 text-red-500 gap-4">
-                <AlertCircle size={48} />
-                <p className="text-lg font-medium">{error}</p>
-                <Link to="/mis-videos">
-                    <Button variant="outline">Volver a mis videos</Button>
-                </Link>
-            </div>
-        );
+  const fetchDetails = async (id: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiRequest<{ success: boolean; video: VideoDetails }>(
+        `/socio/video/${id}/details`,
+      );
+      if (response?.success) {
+        setDetails(response.video);
+      } else {
+        setError(t('videoDetails.loadError'));
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message) {
+        setError(e.message);
+      } else {
+        setError(t('videoDetails.connectionError'));
+      }
+    } finally {
+      setLoading(false);
     }
+  };
 
-    if (!details) return null;
+  const jumpToTime = (time: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+      void videoRef.current.play();
+    }
+  };
 
+  const rawStatus = details?.resultado_ia || details?.estado || '';
+
+  if (loading) {
     return (
-        <div className="flex flex-col h-[calc(100vh-64px)] overflow-hidden bg-white text-gray-900">
-            {/* Sticky Header */}
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-4 bg-white z-10 shrink-0">
-                <Link to="/mis-videos" className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-gray-900">
-                    <ChevronLeft size={24} />
-                </Link>
-                <div>
-                    <h1 className="text-xl font-bold flex items-center gap-3">
-                        {details.titulo || 'Detalles del Video'}
-                        {getStatusBadge()}
-                    </h1>
-                    <p className="text-xs text-gray-500 mt-1">
-                        ID: {videoId}
-                    </p>
-                </div>
-            </div>
-
-            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-
-                {/* LEFT: Player */}
-                <div className="w-full md:w-3/5 bg-black flex flex-col relative group items-center justify-center">
-                    {details.video_url ? (
-                        <video
-                            ref={videoRef}
-                            src={details.video_url}
-                            className="w-full h-full object-contain max-h-full"
-                            controls
-                            playsInline
-                        />
-                    ) : (
-                        <div className="flex flex-col items-center gap-3 px-6 text-center text-gray-300">
-                            <Video size={48} />
-                            <p className="font-medium text-white">
-                                {details.estado?.toLowerCase() === 'procesando'
-                                    ? 'El video sigue procesándose.'
-                                    : 'El video no está disponible.'}
-                            </p>
-                            <p className="text-sm text-gray-400">
-                                Intenta nuevamente cuando el procesamiento haya finalizado.
-                            </p>
-                        </div>
-                    )}
-                </div>
-
-                {/* RIGHT: Data Panels */}
-                <div className="w-full md:w-2/5 flex flex-col bg-gray-50 border-l border-gray-200">
-
-                    {/* Tabs Navigation */}
-                    <div className="flex border-b border-gray-200 bg-white shrink-0">
-                        <button
-                            onClick={() => setActiveTab('summary')}
-                            className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'summary' ? 'border-tivit-red text-tivit-red' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                        >
-                            Resumen
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('shots')}
-                            className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'shots' ? 'border-tivit-red text-tivit-red' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                        >
-                            Tomas
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('text')}
-                            className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'text' ? 'border-tivit-red text-tivit-red' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                        >
-                            Texto
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('labels')}
-                            className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'labels' ? 'border-tivit-red text-tivit-red' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
-                        >
-                            Objetos
-                        </button>
-                    </div>
-
-                    {/* Content Area */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-
-                        {activeTab === 'summary' && (
-                            <div className="space-y-6 animate-in fade-in duration-300">
-
-                                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-                                    <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Decisión Automatizada</h4>
-                                    <p className="font-medium text-gray-900 leading-relaxed">
-                                        {details.razon || "No se ha registrado una razón específica."}
-                                    </p>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100">
-                                        <p className="text-xs text-gray-400 mb-1">Confianza IA</p>
-                                        <div className="flex items-end gap-1">
-                                            <span className="text-2xl font-bold text-tivit-red">
-                                                {Math.round((details.confianza || 0) * 100)}%
-                                            </span>
-                                        </div>
-                                    </div>
-                                    <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100">
-                                        <p className="text-xs text-gray-400 mb-1">Fecha Procesamiento</p>
-                                        <p className="text-sm font-bold text-gray-800">
-                                            {details.fecha_procesamiento ? new Date(details.fecha_procesamiento).toLocaleDateString() : 'N/A'}
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {details.analisis && (
-                                    <div>
-                                        <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Análisis Técnico</h4>
-                                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 text-xs font-mono text-gray-600 leading-relaxed whitespace-pre-wrap">
-                                            {details.analisis}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {activeTab === 'shots' && (
-                            <div className="space-y-2 animate-in fade-in duration-300">
-                                <p className="text-xs text-gray-500 mb-4 px-1">
-                                    Se detectaron {details.shots?.length || 0} cambios de escena. Haz clic para navegar.
-                                </p>
-                                {details.shots?.map((shot, idx) => (
-                                    <button
-                                        key={idx}
-                                        onClick={() => jumpToTime(shot.start_time)}
-                                        className="w-full flex items-center justify-between p-3 bg-white hover:bg-red-50 hover:border-red-100 border border-gray-100 rounded-lg group transition-all"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-8 h-8 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center font-bold text-xs group-hover:bg-red-100 group-hover:text-tivit-red transition-colors">
-                                                {idx + 1}
-                                            </div>
-                                            <div className="flex flex-col items-start">
-                                                <span className="text-sm font-bold text-gray-700 group-hover:text-tivit-red">
-                                                    Escena {idx + 1}
-                                                </span>
-                                                <span className="text-xs text-gray-400">
-                                                    Duración: {(shot.end_time - shot.start_time).toFixed(1)}s
-                                                </span>
-                                            </div>
-                                        </div>
-                                        <div className="text-xs font-mono font-medium text-gray-500 bg-gray-50 px-2 py-1 rounded">
-                                            {shot.start_formatted} - {shot.end_formatted}
-                                        </div>
-                                    </button>
-                                ))}
-                                {(!details.shots || details.shots.length === 0) && (
-                                    <div className="text-center py-10 text-gray-400">
-                                        <Video size={32} className="mx-auto mb-2 opacity-50" />
-                                        <p>No se detectaron escenas separadas.</p>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {activeTab === 'text' && (
-                            <div className="space-y-3 animate-in fade-in duration-300">
-                                <p className="text-xs text-gray-500 mb-2 px-1">
-                                    Texto identificado en pantalla (OCR).
-                                </p>
-                                {details.texto_detectado?.length > 0 ? (
-                                    <div className="flex flex-wrap gap-2">
-                                        {details.texto_detectado.map((txt, i) => (
-                                            <div key={i} className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg shadow-sm text-sm text-gray-700 flex items-center gap-2">
-                                                <Type size={12} className="text-gray-400" />
-                                                {txt}
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div className="text-center py-10 text-gray-400">
-                                        <Type size={32} className="mx-auto mb-2 opacity-50" />
-                                        <p>No se detectó texto en el video.</p>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {activeTab === 'labels' && (
-                            <div className="space-y-3 animate-in fade-in duration-300">
-                                <p className="text-xs text-gray-500 mb-2 px-1">
-                                    Objetos y etiquetas detectadas por IA.
-                                </p>
-                                {details.labels?.length > 0 ? (
-                                    <div className="flex flex-wrap gap-2">
-                                        {details.labels.map((label: any, i) => {
-                                            const labelName = typeof label === 'string' ? label : label.entity?.description || label.description || 'Objeto';
-                                            const confidence = typeof label === 'object' && label.confidence ? `(${Math.round(label.confidence * 100)}%)` : '';
-
-                                            return (
-                                                <div key={i} className="px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg text-sm text-blue-700 flex items-center gap-2">
-                                                    <Tag size={12} className="text-blue-400" />
-                                                    {labelName} <span className="text-[10px] opacity-70">{confidence}</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                ) : (
-                                    <div className="text-center py-10 text-gray-400">
-                                        <Tag size={32} className="mx-auto mb-2 opacity-50" />
-                                        <p>No se detectaron etiquetas específicas.</p>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                    </div>
-                </div>
-            </div>
-        </div>
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <LoadingState label={t('common.loading')} />
+      </div>
     );
+  }
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <ErrorState
+          title={t('videoDetails.loadError')}
+          description={error}
+          onRetry={() => videoId && fetchDetails(videoId)}
+        />
+        <div className="mt-4">
+          <Button variant="outline" asChild>
+            <Link to="/mis-videos">{t('videoDetails.back')}</Link>
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!details) return null;
+
+  const labelName = (label: unknown): string => {
+    if (typeof label === 'string') return label;
+    if (label && typeof label === 'object') {
+      const item = label as LabelItem;
+      return item.entity?.description || item.description || t('videoDetails.objectFallback');
+    }
+    return t('videoDetails.objectFallback');
+  };
+
+  const labelConfidence = (label: unknown): string => {
+    if (label && typeof label === 'object' && typeof (label as LabelItem).confidence === 'number') {
+      return t('videoDetails.labelConfidence', {
+        percent: Math.round(((label as LabelItem).confidence ?? 0) * 100),
+      });
+    }
+    return '';
+  };
+
+  return (
+    <div className="flex h-[calc(100vh-64px)] flex-col overflow-hidden bg-background text-foreground">
+      {/* Sticky Header */}
+      <div className="z-10 flex shrink-0 items-center gap-4 border-b border-border bg-card px-6 py-4">
+        <Button variant="ghost" size="icon" asChild>
+          <Link to="/mis-videos" aria-label={t('videoDetails.back')}>
+            <ChevronLeft aria-hidden="true" />
+          </Link>
+        </Button>
+        <div className="min-w-0">
+          <h1 className="flex flex-wrap items-center gap-3 text-xl font-semibold tracking-tight">
+            <span className="truncate">{details.titulo || t('videoDetails.fallbackTitle')}</span>
+            <StatusBadge
+              status={statusFromRaw(rawStatus)}
+              label={
+                statusFromRaw(rawStatus) === 'approved'
+                  ? t('videoDetails.statusApproved')
+                  : statusFromRaw(rawStatus) === 'rejected'
+                    ? t('videoDetails.statusRejected')
+                    : rawStatus
+              }
+            />
+          </h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('videoDetails.idLabel', { id: videoId })}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+        {/* LEFT: Player */}
+        <div className="group relative flex w-full flex-col items-center justify-center bg-black md:w-3/5">
+          {details.video_url ? (
+            <video
+              ref={videoRef}
+              src={details.video_url}
+              className="max-h-full w-full object-contain"
+              controls
+              playsInline
+            />
+          ) : (
+            <div className="flex flex-col items-center gap-3 px-6 text-center text-gray-300">
+              <VideoIcon aria-hidden="true" size={48} />
+              <p className="font-medium text-white">
+                {details.estado?.toLowerCase() === 'procesando'
+                  ? t('videoDetails.processing')
+                  : t('videoDetails.unavailable')}
+              </p>
+              <p className="text-sm text-gray-400">{t('videoDetails.unavailableHint')}</p>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT: Data Panels */}
+        <div className="flex w-full flex-col border-l border-border bg-muted/40 md:w-2/5">
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as typeof activeTab)}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <TabsList className="h-auto w-full shrink-0 justify-between rounded-none border-b border-border bg-card p-0">
+              <TabsTrigger value="summary" className="flex-1 rounded-none py-3">
+                {t('videoDetails.tabSummary')}
+              </TabsTrigger>
+              <TabsTrigger value="shots" className="flex-1 rounded-none py-3">
+                {t('videoDetails.tabShots')}
+              </TabsTrigger>
+              <TabsTrigger value="text" className="flex-1 rounded-none py-3">
+                {t('videoDetails.tabText')}
+              </TabsTrigger>
+              <TabsTrigger value="labels" className="flex-1 rounded-none py-3">
+                {t('videoDetails.tabLabels')}
+              </TabsTrigger>
+            </TabsList>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <TabsContent value="summary" className="mt-0 space-y-6">
+                <Card className="p-4">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {t('videoDetails.decisionTitle')}
+                  </h4>
+                  <p className="font-medium leading-relaxed text-foreground">
+                    {details.razon || t('videoDetails.noReason')}
+                  </p>
+                </Card>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <Card className="p-3">
+                    <p className="mb-1 text-xs text-muted-foreground">
+                      {t('videoDetails.confidence')}
+                    </p>
+                    <span className="text-2xl font-bold text-primary">
+                      {Math.round((details.confianza || 0) * 100)}%
+                    </span>
+                  </Card>
+                  <Card className="p-3">
+                    <p className="mb-1 text-xs text-muted-foreground">
+                      {t('videoDetails.processedDate')}
+                    </p>
+                    <p className="text-sm font-bold text-foreground">
+                      {details.fecha_procesamiento
+                        ? formatDate(details.fecha_procesamiento)
+                        : t('videoDetails.notAvailable')}
+                    </p>
+                  </Card>
+                </div>
+
+                {details.analisis && (
+                  <div>
+                    <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {t('videoDetails.technicalAnalysis')}
+                    </h4>
+                    <Card className="whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-muted-foreground">
+                      {details.analisis}
+                    </Card>
+                  </div>
+                )}
+              </TabsContent>
+
+              <TabsContent value="shots" className="mt-0 space-y-2">
+                <p className="mb-4 px-1 text-xs text-muted-foreground">
+                  {t('videoDetails.shotsCount', { count: details.shots?.length || 0 })}
+                </p>
+                {details.shots?.map((shot, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => jumpToTime(shot.start_time)}
+                    className="group flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 transition-colors hover:border-brand-border hover:bg-brand-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground transition-colors group-hover:bg-brand-soft group-hover:text-primary">
+                        {idx + 1}
+                      </div>
+                      <div className="flex flex-col items-start">
+                        <span className="text-sm font-bold text-foreground group-hover:text-primary">
+                          {t('videoDetails.scene', { number: idx + 1 })}
+                        </span>
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock size={11} aria-hidden="true" />
+                          {t('videoDetails.sceneDuration', {
+                            seconds: (shot.end_time - shot.start_time).toFixed(1),
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">
+                        {shot.start_formatted} - {shot.end_formatted}
+                      </span>
+                      <Play size={14} className="text-primary" aria-hidden="true" />
+                    </div>
+                  </button>
+                ))}
+                {(!details.shots || details.shots.length === 0) && (
+                  <EmptyState
+                    icon={<VideoIcon aria-hidden="true" />}
+                    title={t('videoDetails.noShots')}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="text" className="mt-0 space-y-3">
+                <p className="mb-2 px-1 text-xs text-muted-foreground">
+                  {t('videoDetails.ocrDescription')}
+                </p>
+                {details.texto_detectado?.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {details.texto_detectado.map((txt, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground"
+                      >
+                        <Type size={12} className="text-muted-foreground" aria-hidden="true" />
+                        {txt}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState
+                    icon={<Type aria-hidden="true" />}
+                    title={t('videoDetails.noText')}
+                  />
+                )}
+              </TabsContent>
+
+              <TabsContent value="labels" className="mt-0 space-y-3">
+                <p className="mb-2 px-1 text-xs text-muted-foreground">
+                  {t('videoDetails.labelsDescription')}
+                </p>
+                {details.labels?.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {details.labels.map((label, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 rounded-lg border border-info-border bg-info-surface px-3 py-1.5 text-sm text-info"
+                      >
+                        <Tag size={12} className="text-info" aria-hidden="true" />
+                        {labelName(label)}
+                        <span className="text-[10px] opacity-70">{labelConfidence(label)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState
+                    icon={<Tag aria-hidden="true" />}
+                    title={t('videoDetails.noLabels')}
+                  />
+                )}
+              </TabsContent>
+            </div>
+          </Tabs>
+        </div>
+      </div>
+    </div>
+  );
 }

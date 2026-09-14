@@ -1,523 +1,578 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from '@tanstack/react-router';
-import { FolderOpen, ArrowLeft, Upload, Settings, Video, Clock, Play, CheckCircle, XCircle, AlertTriangle, Trash2 } from 'lucide-react';
+import {
+  FolderOpen,
+  Upload,
+  Video,
+  Clock,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  Trash2,
+} from 'lucide-react';
 import { workspaceService, type Workspace } from '../services/workspace';
 import { videoService } from '../services/video';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Alert, AlertDescription } from '../components/ui/alert';
+import { Spinner } from '../components/ui/spinner';
+import { EmptyState } from '../components/ui/empty-state';
+import { LoadingState } from '../components/ui/loading-state';
+import { ErrorState } from '../components/ui/error-state';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { WorkspaceUploadModal } from '../components/WorkspaceUploadModal';
 import { BatchNotification } from '../components/BatchNotification';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { VideoDetailsModal } from '../components/VideoDetailsModal';
 import { getApiBaseUrl } from '../lib/backendUrl';
+import { useTranslation } from '../i18n';
+
+interface WorkspaceVideo {
+  id: string;
+  nombre_archivo: string;
+  estado: string;
+  resultado_ia?: string;
+}
 
 export default function WorkspaceDetailPage() {
-    const { id } = useParams({ strict: false }) as { id: string };
-    const navigate = useNavigate();
-    const [workspace, setWorkspace] = useState<Workspace | null>(null);
-    const [videos, setVideos] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [showUploadModal, setShowUploadModal] = useState(false);
+  const { id } = useParams({ strict: false }) as { id: string };
+  const navigate = useNavigate();
+  const { t } = useTranslation();
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [videos, setVideos] = useState<WorkspaceVideo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
-    // Estado para confirmación de eliminación de video
-    const [videoToDelete, setVideoToDelete] = useState<{ id: string, nombre: string } | null>(null);
-    const [deleting, setDeleting] = useState(false);
+  // Estado para confirmación de eliminación de video
+  const [videoToDelete, setVideoToDelete] = useState<{ id: string; nombre: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
-    // Estado para confirmación de eliminación del proyecto
-    const [showDeleteProject, setShowDeleteProject] = useState(false);
-    const [deletingProject, setDeletingProject] = useState(false);
+  // Estado para confirmación de eliminación del proyecto
+  const [showDeleteProject, setShowDeleteProject] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
 
-    // Estado para batch upload
-    const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
-    const [showBatchNotification, setShowBatchNotification] = useState(false);
-    const [isTabVisible, setIsTabVisible] = useState(() => !document.hidden);
+  // Estado para batch upload
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [showBatchNotification, setShowBatchNotification] = useState(false);
+  const [isTabVisible, setIsTabVisible] = useState(() => !document.hidden);
 
-    // Estado para detalles del video
-    const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
-    const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  // Estado para detalles del video
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
-    // Polling para auto-refresh cuando hay videos procesando
-    const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Polling para auto-refresh cuando hay videos procesando
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    const PROCESSING_STATES = [
-        'pendiente', 'procesando', 'en_progreso', 'en_revision',
-        'uploading', 'uploaded', 'analyzing', 'classifying',
-        'deep_analyzing', 'generating_report', 'motion_detecting', 'motion_detected'
-    ];
+  const PROCESSING_STATES = [
+    'pendiente', 'procesando', 'en_progreso', 'en_revision',
+    'uploading', 'uploaded', 'analyzing', 'classifying',
+    'deep_analyzing', 'generating_report', 'motion_detecting', 'motion_detected',
+  ];
 
-    const isVideoFinalized = (video: any) => {
-        const status = (video?.resultado_ia || video?.estado || '').toString().toLowerCase();
-        return !PROCESSING_STATES.includes(status);
+  const isVideoFinalized = (video: WorkspaceVideo) => {
+    const status = (video?.resultado_ia || video?.estado || '').toString().toLowerCase();
+    return !PROCESSING_STATES.includes(status);
+  };
+
+  const hasProcessingVideos = useCallback(
+    (vids: WorkspaceVideo[]) =>
+      vids.some((v) => PROCESSING_STATES.includes(v.estado?.toLowerCase())),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  useEffect(() => {
+    const onVisibilityChange = () => setIsTabVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    if (id) {
+      loadWorkspace();
+    }
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
-    const hasProcessingVideos = useCallback(
-        (vids: any[]) => vids.some(v => PROCESSING_STATES.includes(v.estado?.toLowerCase())),
-        []
-    );
+  // Auto-polling: cuando hay videos procesando, refrescar cada 5s
+  useEffect(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
 
-    useEffect(() => {
-        const onVisibilityChange = () => setIsTabVisible(!document.hidden);
-        document.addEventListener('visibilitychange', onVisibilityChange);
-        return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-    }, []);
-
-    useEffect(() => {
-        if (id) {
-            loadWorkspace();
-        }
-        return () => {
-            if (pollingRef.current) clearInterval(pollingRef.current);
-        };
-    }, [id]);
-
-    // Auto-polling: cuando hay videos procesando, refrescar cada 5s
-    useEffect(() => {
-        if (pollingRef.current) {
+    if (isTabVisible && hasProcessingVideos(videos)) {
+      pollingRef.current = setInterval(async () => {
+        try {
+          const vids = (await workspaceService.getWorkspaceVideos(
+            id,
+          )) as WorkspaceVideo[];
+          setVideos(vids);
+          if (!hasProcessingVideos(vids) && pollingRef.current) {
             clearInterval(pollingRef.current);
             pollingRef.current = null;
+          }
+        } catch {
+          // El polling se reintenta en el siguiente tick
         }
-
-        if (isTabVisible && hasProcessingVideos(videos)) {
-            pollingRef.current = setInterval(async () => {
-                try {
-                    const vids = await workspaceService.getWorkspaceVideos(id);
-                    setVideos(vids);
-                    // Si ya no hay videos procesando, parar el polling
-                    if (!hasProcessingVideos(vids) && pollingRef.current) {
-                        clearInterval(pollingRef.current);
-                        pollingRef.current = null;
-                    }
-                } catch (e) {
-                    console.error('Error polling videos:', e);
-                }
-            }, 5000);
-        }
-
-        return () => {
-            if (pollingRef.current) clearInterval(pollingRef.current);
-        };
-    }, [videos, hasProcessingVideos, id, isTabVisible]);
-
-    const loadWorkspace = async () => {
-        try {
-            setLoading(true);
-            const [ws, vids] = await Promise.all([
-                workspaceService.getWorkspace(id),
-                workspaceService.getWorkspaceVideos(id),
-            ]);
-            setWorkspace(ws);
-            setVideos(vids);
-        } catch (error) {
-            console.error('Error loading workspace:', error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleUploadClick = () => {
-        setShowUploadModal(true);
-    };
-
-    const handleBatchUploadSuccess = (batchId: string, _videoIds: string[]) => {
-        setShowUploadModal(false);
-        setActiveBatchId(batchId);
-        setShowBatchNotification(true);
-        toast.info('Videos cargados. El análisis continúa en segundo plano.');
-        loadWorkspace();
-    };
-
-    const handleBatchComplete = () => {
-        setShowBatchNotification(false);
-        setActiveBatchId(null);
-        loadWorkspace();
-    };
-
-    const handleDeleteVideo = async () => {
-        if (!videoToDelete) return;
-
-        setDeleting(true);
-        try {
-            const result = await videoService.deleteVideo(videoToDelete.id);
-            if (result?.success) {
-                loadWorkspace();
-            } else {
-                console.error('Error eliminando video');
-            }
-        } catch (error) {
-            console.error('Error eliminando video:', error);
-        } finally {
-            setDeleting(false);
-            setVideoToDelete(null);
-        }
-    };
-
-    const handleDeleteProject = async () => {
-        if (!workspace) return;
-        setDeletingProject(true);
-        try {
-            await workspaceService.deleteWorkspace(workspace.id, 'mover_general');
-            navigate({ to: '/proyectos' });
-        } catch (error) {
-            console.error('Error eliminando proyecto:', error);
-            toast.error('Error al eliminar el proyecto');
-        } finally {
-            setDeletingProject(false);
-            setShowDeleteProject(false);
-        }
-    };
-
-    const handleVideoClick = (video: any) => {
-        if (!isVideoFinalized(video)) {
-            toast.info('El detalle estará disponible cuando finalice el análisis.');
-            return;
-        }
-
-        setSelectedVideoId(video.id);
-        setIsDetailsOpen(true);
-    };
-
-    const getStatusBadge = (status: string) => {
-        const statusUpper = status?.toUpperCase();
-        switch (statusUpper) {
-            case 'APROBADO':
-            case 'COMPLETADO':
-                return (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide bg-emerald-50 text-emerald-700 border border-emerald-200/60 shadow-sm">
-                        <CheckCircle size={14} /> Aprobado
-                    </span>
-                );
-            case 'RECHAZADO':
-            case 'ERROR':
-                return (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide bg-rose-50 text-rose-700 border border-rose-200/60 shadow-sm">
-                        <XCircle size={14} /> Rechazado
-                    </span>
-                );
-            case 'PROCESANDO':
-            case 'PENDIENTE':
-            case 'EN_PROGRESO':
-                return (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide bg-amber-50 text-amber-700 border border-amber-200/60 shadow-sm animate-pulse">
-                        <AlertTriangle size={14} /> Procesando
-                    </span>
-                );
-            default:
-                return (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold tracking-wide bg-slate-50 text-slate-600 border border-slate-200/60 shadow-sm">
-                        {status || 'Desconocido'}
-                    </span>
-                );
-        }
-    };
-
-    if (loading) {
-        return (
-            <div className="min-h-screen  flex items-center justify-center">
-                <div className="text-center">
-                    <span className="loader"></span>
-                    <p className="mt-4 text-gray-600">Cargando proyecto...</p>
-                </div>
-            </div>
-        );
+      }, 5000);
     }
 
-    if (!workspace) {
-        return (
-            <div className="min-h-screen flex items-center justify-center">
-                <div className="text-center">
-                    <h2 className="text-2xl font-bold text-gray-800 mb-4">Proyecto no encontrado</h2>
-                    <Button onClick={() => navigate({ to: '/proyectos' })} className="bg-blue-600 text-white">
-                        Volver a Proyectos
-                    </Button>
-                </div>
-            </div>
-        );
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [videos, hasProcessingVideos, id, isTabVisible]);
+
+  const loadWorkspace = async () => {
+    try {
+      setLoading(true);
+      setLoadError(false);
+      const [ws, vids] = await Promise.all([
+        workspaceService.getWorkspace(id),
+        workspaceService.getWorkspaceVideos(id),
+      ]);
+      setWorkspace(ws);
+      setVideos(vids as WorkspaceVideo[]);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUploadClick = () => {
+    setShowUploadModal(true);
+  };
+
+  const handleBatchUploadSuccess = (batchId: string, _videoIds: string[]) => {
+    setShowUploadModal(false);
+    setActiveBatchId(batchId);
+    setShowBatchNotification(true);
+    toast.info(t('workspaceDetail.uploadedToast'));
+    loadWorkspace();
+  };
+
+  const handleBatchComplete = () => {
+    setShowBatchNotification(false);
+    setActiveBatchId(null);
+    loadWorkspace();
+  };
+
+  const handleDeleteVideo = async () => {
+    if (!videoToDelete) return;
+
+    setDeleting(true);
+    try {
+      const result = await videoService.deleteVideo(videoToDelete.id);
+      if (result?.success) {
+        loadWorkspace();
+      } else {
+        toast.error(t('workspaceDetail.deleteVideoFailed'));
+      }
+    } catch {
+      toast.error(t('workspaceDetail.deleteVideoFailed'));
+    } finally {
+      setDeleting(false);
+      setVideoToDelete(null);
+    }
+  };
+
+  const handleDeleteProject = async () => {
+    if (!workspace) return;
+    setDeletingProject(true);
+    try {
+      await workspaceService.deleteWorkspace(workspace.id, 'mover_general');
+      navigate({ to: '/proyectos' });
+    } catch {
+      toast.error(t('workspaceDetail.deleteProjectFailed'));
+    } finally {
+      setDeletingProject(false);
+      setShowDeleteProject(false);
+    }
+  };
+
+  const handleVideoClick = (video: WorkspaceVideo) => {
+    if (!isVideoFinalized(video)) {
+      toast.info(t('workspaceDetail.pendingDetailToast'));
+      return;
     }
 
+    setSelectedVideoId(video.id);
+    setIsDetailsOpen(true);
+  };
+
+  const statusBadge = (video: WorkspaceVideo) => {
+    const status = (video.resultado_ia || video.estado || '').toUpperCase();
+    if (status.includes('APROBADO') || status.includes('COMPLETADO')) {
+      return <StatusBadgeWithIcon status="approved" label={t('workspaceDetail.statusApproved')} />;
+    }
+    if (status.includes('RECHAZADO') || status.includes('ERROR')) {
+      return <StatusBadgeWithIcon status="rejected" label={t('workspaceDetail.statusRejected')} />;
+    }
+    if (status.includes('PROCES') || status.includes('PENDIENTE') || status.includes('PROGRESO')) {
+      return (
+        <StatusBadgeWithIcon
+          status="processing"
+          label={t('workspaceDetail.statusProcessing')}
+        />
+      );
+    }
     return (
-        <div className="min-h-screen p-8 animate-in fade-in duration-500">
-            <div className="max-w-[1400px] mx-auto">
-                {/* Breadcrumbs */}
-                <div className="mb-6">
-                    <Breadcrumbs
-                        items={[
-                            { label: 'Proyectos', to: '/proyectos' },
-                            { label: workspace.nombre }
-                        ]}
-                    />
-                </div>
-
-                {/* Header Container */}
-                <div className="relative bg-white rounded-3xl border border-slate-100 shadow-sm p-8 mb-10 overflow-hidden">
-                    {/* Soft Glow Background */}
-                    <div className="absolute top-0 right-0 w-64 h-64 rounded-full blur-3xl -mr-20 -mt-20 opacity-[0.04] pointer-events-none" 
-                         style={{ backgroundColor: workspace.color }} />
-                    <div className="absolute bottom-0 left-0 w-40 h-40 bg-slate-50 rounded-full blur-2xl -ml-10 -mb-10 pointer-events-none" />
-
-                    <div className="relative z-10 flex flex-col gap-6">
-                        {/* Title block */}
-                        <div className="flex items-start justify-between">
-                            <div className="flex items-center gap-5">
-                                <div
-                                    className="w-16 h-16 rounded-[20px] flex items-center justify-center overflow-hidden shadow-sm"
-                                    style={{ backgroundColor: workspace.color + '15', border: `1px solid ${workspace.color}30` }}
-                                >
-                                    {workspace.icono_url ? (
-                                        <img 
-                                            src={workspace.icono_url} 
-                                            alt={workspace.nombre}
-                                            className="w-full h-full object-cover"
-                                        />
-                                    ) : (
-                                        <FolderOpen size={32} style={{ color: workspace.color }} />
-                                    )}
-                                </div>
-                                <div>
-                                    <h1 className="text-3xl font-bold text-slate-800 tracking-tight">{workspace.nombre}</h1>
-                                    {workspace.descripcion && (
-                                        <p className="text-slate-500 mt-1 text-[15px] max-w-2xl">{workspace.descripcion}</p>
-                                    )}
-                                </div>
-                            </div>
-                            {!workspace.es_general && (
-                                <button
-                                    onClick={() => setShowDeleteProject(true)}
-                                    className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-rose-600 border border-rose-200 hover:bg-rose-50 hover:border-rose-300 rounded-full transition-all shadow-sm"
-                                    title="Eliminar proyecto"
-                                >
-                                    <Trash2 size={15} />
-                                    Eliminar proyecto
-                                </button>
-                            )}
-                        </div>
-
-                        {/* Context Block */}
-                        {workspace.contexto && (
-                            <div className="bg-slate-50/50 rounded-2xl p-5 border border-slate-200/60 max-w-4xl shadow-sm">
-                                <h3 className="flex items-center gap-2 font-semibold text-slate-700 mb-2">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                                    Contexto del Proyecto
-                                </h3>
-                                <p className="text-slate-600 text-sm leading-relaxed">{workspace.contexto}</p>
-                            </div>
-                        )}
-
-                        {/* Stats Strip */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-2">
-                            <div className="bg-white border border-slate-200/60 shadow-sm rounded-2xl p-5 flex items-center gap-4 transition-all hover:shadow-md hover:-translate-y-0.5">
-                                <div className="p-3 bg-slate-50 text-slate-600 rounded-xl">
-                                    <Video size={20} />
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-slate-800 leading-none mb-1">
-                                        {videos.length}
-                                    </div>
-                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Total Videos</div>
-                                </div>
-                            </div>
-
-                            <div className="bg-white border border-slate-200/60 shadow-sm rounded-2xl p-5 flex items-center gap-4 transition-all hover:shadow-md hover:-translate-y-0.5">
-                                <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
-                                    <CheckCircle size={20} />
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-slate-800 leading-none mb-1">
-                                        {videos.filter(v => ['aprobado', 'completado'].includes(v.estado?.toLowerCase())).length}
-                                    </div>
-                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Aprobados</div>
-                                </div>
-                            </div>
-
-                            <div className="bg-white border border-slate-200/60 shadow-sm rounded-2xl p-5 flex items-center gap-4 transition-all hover:shadow-md hover:-translate-y-0.5">
-                                <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
-                                    <XCircle size={20} />
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-slate-800 leading-none mb-1">
-                                        {videos.filter(v => ['rechazado', 'error'].includes(v.estado?.toLowerCase())).length}
-                                    </div>
-                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Rechazados</div>
-                                </div>
-                            </div>
-
-                            <div className="bg-white border border-slate-200/60 shadow-sm rounded-2xl p-5 flex items-center gap-4 transition-all hover:shadow-md hover:-translate-y-0.5">
-                                <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
-                                    <Clock size={20} />
-                                </div>
-                                <div>
-                                    <div className="text-2xl font-bold text-slate-800 leading-none mb-1">
-                                        {videos.filter(v => ['en_revision', 'procesando', 'pendiente', 'en_progreso'].includes(v.estado?.toLowerCase())).length}
-                                    </div>
-                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">En Revisión</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Videos Section */}
-                <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-2xl font-bold text-slate-800">Videos del Proyecto</h2>
-                    <Button
-                        onClick={handleUploadClick}
-                        className="bg-slate-800 hover:bg-slate-700 text-white px-5 py-2.5 rounded-full font-medium flex items-center gap-2 shadow-sm transition-all hover:shadow-md hover:-translate-y-0.5 text-sm"
-                    >
-                        <Upload size={16} />
-                        Subir Video
-                    </Button>
-                </div>
-
-                {hasProcessingVideos(videos) && (
-                    <div className="mb-6 bg-blue-50/80 border border-blue-200/60 rounded-2xl px-5 py-4 flex items-center gap-3 shadow-sm animate-in fade-in slide-in-from-top-2">
-                        <span className="loader scale-75"></span>
-                        <p className="text-sm text-blue-800 font-semibold animate-pulse">
-                            Analizando videos con IA en segundo plano...
-                        </p>
-                    </div>
-                )}
-
-                {videos.length === 0 ? (
-                    <div className="bg-white rounded-3xl border border-slate-200/60 shadow-sm p-24 text-center animate-in zoom-in-95 duration-500">
-                        <div className="p-5 rounded-full bg-slate-50 inline-block mb-6 relative group cursor-pointer transition-transform hover:scale-105 duration-300">
-                            <Video size={48} className="text-slate-300 relative z-10 group-hover:text-blue-500 transition-colors duration-300" />
-                        </div>
-                        <h3 className="text-xl font-bold text-slate-800 mb-2">
-                            Aún no hay videos en este proyecto
-                        </h3>
-                        <p className="text-slate-500 text-[15px] mb-8 max-w-sm mx-auto leading-relaxed">Sube tu primer video para que la Inteligencia Artificial analice su contenido basándose en el contexto del proyecto.</p>
-                        <Button
-                            onClick={handleUploadClick}
-                            className="bg-slate-800 hover:bg-slate-700 text-white px-8 py-3 rounded-full font-semibold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all text-[15px]"
-                        >
-                            <Upload size={18} className="mr-2" /> Comenzar a Subir
-                        </Button>
-                    </div>
-                ) : (
-                    <div className="bg-white rounded-3xl border border-slate-200/60 shadow-sm overflow-hidden mb-8">
-                        {/* Header de la tabla */}
-                        <div className="grid grid-cols-12 gap-4 items-center px-8 py-4 bg-slate-50/50 border-b border-slate-200/60 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                            <div className="col-span-2">Preview</div>
-                            <div className="col-span-6">Título del Archivo</div>
-                            <div className="col-span-3">Estado de IA</div>
-                            <div className="col-span-1 text-center">Acciones</div>
-                        </div>
-
-                        {/* Lista de videos */}
-                        <div className="divide-y divide-slate-100">
-                            {videos.map((video) => (
-                                <div
-                                    key={video.id}
-                                    onClick={() => handleVideoClick(video)}
-                                    className="grid grid-cols-12 gap-4 items-center px-8 py-5 bg-white transition-all cursor-pointer group hover:bg-slate-50/80"
-                                >
-                                    {/* Preview con thumbnail */}
-                                    <div className="col-span-2">
-                                        <div className="h-16 w-28 bg-slate-100 rounded-xl flex items-center justify-center overflow-hidden relative shadow-sm border border-slate-200/60 transition-transform duration-300 group-hover:scale-105 group-hover:shadow-md">
-                                            {/* Placeholder/Fallback always rendered behind */}
-                                            <Video className="text-slate-300 absolute" size={24} />
-
-                                            {/* Image overlay */}
-                                            <img
-                                                crossOrigin="use-credentials"
-                                                src={`${getApiBaseUrl()}/socio/thumbnail/${video.id}`}
-                                                alt={video.nombre_archivo}
-                                                className="absolute inset-0 w-full h-full object-cover bg-slate-100 transition-transform duration-500 group-hover:scale-110"
-                                                onError={(e) => {
-                                                    // Si falla la carga, ocultamos la imagen para mostrar el icono de fondo
-                                                    (e.target as HTMLImageElement).style.opacity = '0';
-                                                }}
-                                            />
-
-                                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/10 transition-colors z-10" />
-                                        </div>
-                                    </div>
-
-                                    {/* Título */}
-                                    <div className="col-span-6 pr-6">
-                                        <span className="font-semibold text-[15px] text-slate-800 block truncate group-hover:text-slate-900 transition-colors">
-                                            {video.nombre_archivo}
-                                        </span>
-                                    </div>
-
-                                    {/* Estado */}
-                                    <div className="col-span-3">
-                                        {getStatusBadge(video.estado)}
-                                    </div>
-
-                                    {/* Acciones */}
-                                    <div className="col-span-1 flex justify-center">
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setVideoToDelete({ id: video.id, nombre: video.nombre_archivo });
-                                            }}
-                                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all opacity-0 group-hover:opacity-100 focus:opacity-100"
-                                            title="Eliminar video"
-                                        >
-                                            <Trash2 size={18} />
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* Modal de upload */}
-            {workspace && (
-                <WorkspaceUploadModal
-                    open={showUploadModal}
-                    onOpenChange={setShowUploadModal}
-                    workspaceId={workspace.id}
-                    workspaceName={workspace.nombre}
-                    onBatchUploadSuccess={handleBatchUploadSuccess}
-                />
-            )}
-
-            {/* Modal de detalles del video */}
-            <VideoDetailsModal
-                videoId={selectedVideoId}
-                open={isDetailsOpen}
-                onOpenChange={setIsDetailsOpen}
-            />
-
-            {/* Notificación de batch */}
-            {activeBatchId && showBatchNotification && (
-                <BatchNotification
-                    batchId={activeBatchId}
-                    onClose={() => setShowBatchNotification(false)}
-                    onComplete={handleBatchComplete}
-                />
-            )}
-
-            {/* Diálogo de confirmación para eliminar video */}
-            <ConfirmDialog
-                open={!!videoToDelete}
-                onOpenChange={(open) => !open && setVideoToDelete(null)}
-                title="Eliminar Video"
-                description={`¿Estás seguro de que deseas eliminar "${videoToDelete?.nombre}"? Esta acción no se puede deshacer.`}
-                confirmText={deleting ? "Eliminando..." : "Eliminar"}
-                cancelText="Cancelar"
-                onConfirm={handleDeleteVideo}
-                variant="danger"
-                loading={deleting}
-            />
-
-            {/* Diálogo de confirmación para eliminar proyecto */}
-            <ConfirmDialog
-                open={showDeleteProject}
-                onOpenChange={(open) => !open && setShowDeleteProject(false)}
-                title="Eliminar Proyecto"
-                description={`¿Estás seguro de que deseas eliminar el proyecto "${workspace?.nombre}"? Los videos se moverán al proyecto General.`}
-                confirmText={deletingProject ? "Eliminando..." : "Eliminar proyecto"}
-                cancelText="Cancelar"
-                onConfirm={handleDeleteProject}
-                variant="danger"
-                loading={deletingProject}
-            />
-        </div>
+      <Badge variant="muted">{video.estado || t('workspaceDetail.statusUnknown')}</Badge>
     );
+  };
+
+  if (loading) {
+    return <LoadingState label={t('workspaceDetail.loading')} />;
+  }
+
+  if (loadError && !workspace) {
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <ErrorState
+          title={t('workspaceDetail.notFound')}
+          description={t('workspaceDetail.loadFailed')}
+          onRetry={loadWorkspace}
+        />
+        <div className="mt-4">
+          <Button variant="outline" onClick={() => navigate({ to: '/proyectos' })}>
+            {t('workspaceDetail.backToProjects')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!workspace) {
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <EmptyState
+          icon={<FolderOpen aria-hidden="true" />}
+          title={t('workspaceDetail.notFound')}
+          action={
+            <Button onClick={() => navigate({ to: '/proyectos' })}>
+              {t('workspaceDetail.backToProjects')}
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
+  const counts = {
+    total: videos.length,
+    approved: videos.filter((v) => ['aprobado', 'completado'].includes(v.estado?.toLowerCase()))
+      .length,
+    rejected: videos.filter((v) => ['rechazado', 'error'].includes(v.estado?.toLowerCase())).length,
+    review: videos.filter((v) =>
+      ['en_revision', 'procesando', 'pendiente', 'en_progreso'].includes(v.estado?.toLowerCase()),
+    ).length,
+  };
+
+  return (
+    <div className="mx-auto w-full max-w-[1400px] space-y-6 pb-16 animate-in fade-in duration-500">
+      <Breadcrumbs
+        items={[{ label: t('nav.projects'), to: '/proyectos' }, { label: workspace.nombre }]}
+      />
+
+      {/* Header Container */}
+      <Card variant="elevated" className="relative overflow-hidden p-8">
+        <div
+          className="pointer-events-none absolute -mr-20 -mt-20 right-0 top-0 h-64 w-64 rounded-full opacity-5 blur-3xl"
+          style={{ backgroundColor: workspace.color }}
+        />
+        <div className="relative z-10 flex flex-col gap-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-center gap-5">
+              <div
+                className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl border"
+                style={{
+                  backgroundColor: workspace.color + '15',
+                  borderColor: workspace.color + '30',
+                }}
+              >
+                {workspace.icono_url ? (
+                  <img
+                    src={workspace.icono_url}
+                    alt={workspace.nombre}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <FolderOpen size={32} style={{ color: workspace.color }} aria-hidden="true" />
+                )}
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                  {workspace.nombre}
+                </h1>
+                {workspace.descripcion && (
+                  <p className="mt-1 max-w-2xl text-[15px] text-muted-foreground">
+                    {workspace.descripcion}
+                  </p>
+                )}
+              </div>
+            </div>
+            {!workspace.es_general && (
+              <Button
+                variant="outline"
+                onClick={() => setShowDeleteProject(true)}
+                className="text-error hover:bg-error-surface"
+              >
+                <Trash2 aria-hidden="true" />
+                {t('workspaceDetail.deleteProject')}
+              </Button>
+            )}
+          </div>
+
+          {workspace.contexto && (
+            <div className="max-w-4xl rounded-xl border border-border bg-muted/50 p-5">
+              <h3 className="mb-2 flex items-center gap-2 font-semibold text-foreground">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+                {t('workspaceDetail.context')}
+              </h3>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {workspace.contexto}
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <StatCard
+              icon={<Video size={20} aria-hidden="true" />}
+              value={counts.total}
+              label={t('workspaceDetail.totalVideos')}
+            />
+            <StatCard
+              icon={<CheckCircle size={20} aria-hidden="true" />}
+              value={counts.approved}
+              label={t('workspaceDetail.approved')}
+              tone="success"
+            />
+            <StatCard
+              icon={<XCircle size={20} aria-hidden="true" />}
+              value={counts.rejected}
+              label={t('workspaceDetail.rejected')}
+              tone="error"
+            />
+            <StatCard
+              icon={<Clock size={20} aria-hidden="true" />}
+              value={counts.review}
+              label={t('workspaceDetail.inReview')}
+              tone="warning"
+            />
+          </div>
+        </div>
+      </Card>
+
+      {/* Videos Section */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-foreground">{t('workspaceDetail.videosTitle')}</h2>
+        <Button onClick={handleUploadClick}>
+          <Upload aria-hidden="true" />
+          {t('workspaceDetail.uploadVideo')}
+        </Button>
+      </div>
+
+      {hasProcessingVideos(videos) && (
+        <Alert variant="info" className="items-center">
+          <Spinner size="sm" label={t('workspaceDetail.analyzing')} />
+          <AlertDescription className="font-semibold text-info">
+            {t('workspaceDetail.analyzing')}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {videos.length === 0 ? (
+        <EmptyState
+          icon={<Video aria-hidden="true" />}
+          title={t('workspaceDetail.emptyTitle')}
+          description={t('workspaceDetail.emptyDescription')}
+          action={
+            <Button onClick={handleUploadClick}>
+              <Upload aria-hidden="true" />
+              {t('workspaceDetail.startUpload')}
+            </Button>
+          }
+        />
+      ) : (
+        <Card variant="elevated" className="overflow-hidden">
+          <div className="grid grid-cols-12 items-center gap-4 border-b border-border bg-muted/50 px-8 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+            <div className="col-span-2">{t('workspaceDetail.colPreview')}</div>
+            <div className="col-span-6">{t('workspaceDetail.colTitle')}</div>
+            <div className="col-span-3">{t('workspaceDetail.colStatus')}</div>
+            <div className="col-span-1 text-center">{t('workspaceDetail.colActions')}</div>
+          </div>
+
+          <div className="divide-y divide-border">
+            {videos.map((video) => (
+              <div
+                key={video.id}
+                onClick={() => handleVideoClick(video)}
+                className="group grid cursor-pointer grid-cols-12 items-center gap-4 bg-card px-8 py-5 transition-colors hover:bg-muted/60"
+              >
+                <div className="col-span-2">
+                  <div className="relative flex h-16 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted transition-transform duration-300 group-hover:scale-105">
+                    <Video className="absolute text-gray-300" size={24} aria-hidden="true" />
+                    <img
+                      crossOrigin="use-credentials"
+                      src={`${getApiBaseUrl()}/socio/thumbnail/${video.id}`}
+                      alt={video.nombre_archivo}
+                      className="absolute inset-0 h-full w-full bg-muted object-cover transition-transform duration-500 group-hover:scale-110"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.opacity = '0';
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="col-span-6 pr-6">
+                  <span className="block truncate text-[15px] font-semibold text-foreground">
+                    {video.nombre_archivo}
+                  </span>
+                </div>
+
+                <div className="col-span-3">{statusBadge(video)}</div>
+
+                <div className="col-span-1 flex justify-center">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setVideoToDelete({ id: video.id, nombre: video.nombre_archivo });
+                    }}
+                    className="text-muted-foreground opacity-0 transition-opacity hover:text-error group-hover:opacity-100 focus:opacity-100"
+                    aria-label={t('workspaceDetail.deleteVideo')}
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Modal de upload */}
+      {workspace && (
+        <WorkspaceUploadModal
+          open={showUploadModal}
+          onOpenChange={setShowUploadModal}
+          workspaceId={workspace.id}
+          workspaceName={workspace.nombre}
+          onBatchUploadSuccess={handleBatchUploadSuccess}
+        />
+      )}
+
+      {/* Modal de detalles del video */}
+      <VideoDetailsModal
+        videoId={selectedVideoId}
+        open={isDetailsOpen}
+        onOpenChange={setIsDetailsOpen}
+      />
+
+      {/* Notificación de batch */}
+      {activeBatchId && showBatchNotification && (
+        <BatchNotification
+          batchId={activeBatchId}
+          onClose={() => setShowBatchNotification(false)}
+          onComplete={handleBatchComplete}
+        />
+      )}
+
+      {/* Diálogo de confirmación para eliminar video */}
+      <ConfirmDialog
+        open={!!videoToDelete}
+        onOpenChange={(open) => !open && setVideoToDelete(null)}
+        title={t('workspaceDetail.deleteVideoTitle')}
+        description={t('workspaceDetail.deleteVideoDescription', {
+          name: videoToDelete?.nombre ?? '',
+        })}
+        confirmText={deleting ? t('common.deleting') : t('common.delete')}
+        cancelText={t('common.cancel')}
+        onConfirm={handleDeleteVideo}
+        variant="danger"
+        loading={deleting}
+      />
+
+      {/* Diálogo de confirmación para eliminar proyecto */}
+      <ConfirmDialog
+        open={showDeleteProject}
+        onOpenChange={(open) => !open && setShowDeleteProject(false)}
+        title={t('workspaceDetail.deleteProjectTitle')}
+        description={t('workspaceDetail.deleteProjectDescription', {
+          name: workspace?.nombre ?? '',
+        })}
+        confirmText={
+          deletingProject ? t('common.deleting') : t('workspaceDetail.deleteProjectConfirm')
+        }
+        cancelText={t('common.cancel')}
+        onConfirm={handleDeleteProject}
+        variant="danger"
+        loading={deletingProject}
+      />
+    </div>
+  );
+}
+
+function StatCard({
+  icon,
+  value,
+  label,
+  tone = 'neutral',
+}: {
+  icon: React.ReactNode;
+  value: number;
+  label: string;
+  tone?: 'neutral' | 'success' | 'error' | 'warning';
+}) {
+  const toneClasses = {
+    neutral: 'bg-muted text-muted-foreground',
+    success: 'bg-success-surface text-success',
+    error: 'bg-error-surface text-error',
+    warning: 'bg-warning-surface text-warning',
+  } as const;
+
+  return (
+    <Card variant="elevated" className="flex items-center gap-4 p-5">
+      <div className={`rounded-xl p-3 ${toneClasses[tone]}`}>{icon}</div>
+      <div>
+        <div className="mb-1 text-2xl font-bold leading-none text-foreground">{value}</div>
+        <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          {label}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function StatusBadgeWithIcon({
+  status,
+  label,
+}: {
+  status: 'approved' | 'rejected' | 'processing';
+  label: string;
+}) {
+  const Icon = status === 'approved' ? CheckCircle : status === 'rejected' ? XCircle : AlertTriangle;
+  const classes =
+    status === 'approved'
+      ? 'border-success-border bg-success-surface text-success'
+      : status === 'rejected'
+        ? 'border-error-border bg-error-surface text-error'
+        : 'border-warning-border bg-warning-surface text-warning';
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold tracking-wide ${classes}`}
+    >
+      <Icon size={14} aria-hidden="true" />
+      {label}
+    </span>
+  );
 }

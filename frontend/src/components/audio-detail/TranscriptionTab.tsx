@@ -2,6 +2,9 @@ import { ReactNode } from 'react';
 import { Copy, Loader2, Play, Search, X } from 'lucide-react';
 import { AudioSegment, AudioAnalysis } from '../../services/audioAnalysisService';
 import { audioAnalysisService } from '../../services/audioAnalysisService';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { useTranslation } from '../../i18n';
 
 interface SearchResult extends AudioSegment {
   timestamp_formatted: string;
@@ -34,11 +37,15 @@ function highlightText(text: string, query: string): Array<string | ReactNode> {
   const pattern = new RegExp(`(${escapeRegExp(query)})`, 'ig');
   const parts = text.split(pattern);
 
-  return parts.map((part, idx) => (
-    pattern.test(part)
-      ? <mark key={`${part}-${idx}`} className="bg-yellow-200/80 text-gray-900 px-0.5 rounded">{part}</mark>
-      : part
-  ));
+  return parts.map((part, idx) =>
+    pattern.test(part) ? (
+      <mark key={`${part}-${idx}`} className="rounded bg-warning/30 px-0.5 text-foreground">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
 }
 
 export function TranscriptionTab({
@@ -57,102 +64,121 @@ export function TranscriptionTab({
   onCopyTranscription,
   onSeekTo,
 }: TranscriptionTabProps) {
+  const { t } = useTranslation();
+
   return (
-    <div className="bg-white rounded-3xl shadow-sm border border-slate-200/60 overflow-hidden">
-      {/* Search bar */}
-      <div className="p-6 border-b border-slate-100 bg-white">
+    <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+      <div className="border-b border-border bg-card p-6">
         <div className="flex gap-3">
-          <div className="flex-1 relative">
-            <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input
+          <div className="flex-1">
+            <Input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && onSearch()}
-              placeholder="Buscar en la transcripción..."
-              className="w-full pl-11 pr-5 py-3.5 bg-slate-50/50 border border-slate-200/60 rounded-full focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-[15px] font-medium text-slate-800 transition-all shadow-sm"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  onSearch();
+                }
+              }}
+              placeholder={t('audioTabs.searchPlaceholder')}
+              icon={<Search aria-hidden="true" />}
+              className="rounded-full"
             />
           </div>
-          <button
+          <Button
             onClick={onSearch}
             disabled={!searchQuery.trim() || searching}
-            className="px-5 py-3.5 bg-red-500 text-white rounded-full hover:bg-red-600 transition-all shadow-md disabled:opacity-50 disabled:shadow-none flex items-center justify-center"
+            size="icon"
+            className="rounded-full"
+            aria-label={t('common.search')}
           >
-            {searching ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
-          </button>
-          <button
+            {searching ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Search aria-hidden="true" />}
+          </Button>
+          <Button
             onClick={onCopyTranscription}
-            className="px-5 py-3.5 bg-white border border-slate-200/60 rounded-full hover:bg-slate-50 transition-all flex items-center gap-2 text-slate-600 shadow-sm font-semibold text-[14px]"
-            title="Copiar transcripción completa"
+            variant="outline"
+            size="icon"
+            className="rounded-full"
+            title={t('audioTabs.copyTitle')}
+            aria-label={t('audioTabs.copyTitle')}
           >
-            <Copy className="w-5 h-5" />
-          </button>
+            <Copy aria-hidden="true" />
+          </Button>
         </div>
       </div>
 
-      {/* Search results */}
       {searchResults.length > 0 && (
-        <div className="p-4 bg-amber-50/50 border-b border-amber-100">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-semibold text-amber-800">
-              {searchResults.length} coincidencias para "{searchQuery}"
+        <div className="border-b border-warning-border bg-warning-surface p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold text-warning">
+              {t('audioTabs.matchesFor', { count: searchResults.length, query: searchQuery })}
             </p>
-            <button onClick={clearSearch} className="flex items-center gap-1 text-xs text-amber-600 hover:text-amber-800 transition-colors">
-              <X className="w-3 h-3" />
-              Limpiar
-            </button>
+            <Button variant="ghost" size="sm" onClick={clearSearch} className="text-warning">
+              <X aria-hidden="true" />
+              {t('audioTabs.clear')}
+            </Button>
           </div>
-          <div className="space-y-2 max-h-52 overflow-y-auto">
+          <div className="max-h-52 space-y-2 overflow-y-auto">
             {searchResults.map((result) => (
-              <div key={`${result.id}-${result.start_time}`} className="flex items-start gap-2.5 p-3 bg-white rounded-xl border border-amber-100 hover:border-amber-200 transition-colors">
-                <button
+              <div
+                key={`${result.id}-${result.start_time}`}
+                className="flex items-start gap-2.5 rounded-xl border border-warning-border bg-card p-3 transition-colors hover:border-warning"
+              >
+                <Button
+                  size="xs"
                   onClick={() => onSeekTo(result.start_time)}
-                  className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-2.5 py-1 rounded-lg text-xs font-mono flex-shrink-0 mt-0.5 hover:shadow-md transition-shadow"
+                  className="mt-0.5 flex-shrink-0 bg-warning font-mono hover:bg-warning/90"
                 >
                   {result.timestamp_formatted}
-                </button>
-                <p className="text-sm text-gray-700 leading-relaxed">{highlightText(result.text, searchQuery)}</p>
+                </Button>
+                <p className="text-sm leading-relaxed text-foreground">
+                  {highlightText(result.text, searchQuery)}
+                </p>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Segments list */}
-      <div className="divide-y divide-slate-100/60 max-h-[500px] overflow-y-auto">
+      <div className="max-h-[500px] divide-y divide-border overflow-y-auto">
         {loadingSegments && segments.length === 0 ? (
-          <div className="p-10 text-center">
-            <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3 text-red-500" />
-            <p className="text-slate-500 text-[15px] font-medium">Cargando transcripción...</p>
+          <div className="p-10 text-center" aria-live="polite">
+            <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin text-primary" aria-hidden="true" />
+            <p className="text-[15px] font-medium text-muted-foreground">{t('audioTabs.loadingTranscription')}</p>
           </div>
         ) : segments.length === 0 ? (
-          <div className="p-10 text-center text-slate-400">
-            <p className="text-[15px] font-medium">Sin segmentos de transcripción</p>
+          <div className="p-10 text-center text-muted-foreground">
+            <p className="text-[15px] font-medium">{t('audioTabs.noSegments')}</p>
           </div>
         ) : (
           segments.map((segment, idx) => {
             const prevSpeaker = idx > 0 ? segments[idx - 1].speaker : null;
             const showSpeaker = segment.speaker && segment.speaker !== prevSpeaker;
             return (
-              <div key={segment.id} className="hover:bg-slate-50/80 transition-colors group">
+              <div key={segment.id} className="group transition-colors hover:bg-muted/40">
                 {showSpeaker && (
-                  <div className="px-6 pt-5 pb-1">
-                    <span className="inline-flex items-center gap-1 bg-red-500 text-white text-[12px] font-bold px-3 py-1 rounded-full shadow-sm tracking-wide">
+                  <div className="px-6 pb-1 pt-5">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-[12px] font-bold tracking-wide text-primary-foreground shadow-sm">
                       {segment.speaker}
                     </span>
                   </div>
                 )}
                 <div className="flex items-start gap-4 px-6 pb-4 pt-3">
-                  <button
+                  <Button
+                    size="sm"
                     onClick={() => onSeekTo(segment.start_time)}
-                    className="bg-slate-800 text-white px-3 py-1.5 rounded-full text-[13px] font-mono font-bold flex-shrink-0 mt-0.5 min-w-[78px] text-center inline-flex items-center justify-center gap-1.5 hover:bg-red-500 transition-all duration-300 shadow-sm"
-                    title="Ir a este momento"
+                    title={t('audioTabs.seekTo')}
+                    aria-label={t('audioTabs.seekTo')}
+                    className="mt-0.5 min-w-[78px] flex-shrink-0 justify-center font-mono"
                   >
-                    <Play className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity -ml-1 absolute group-hover:relative" />
+                    <Play className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden="true" />
                     {audioAnalysisService.formatTimestamp(segment.start_time)}
-                  </button>
-                  <p className="text-[15px] text-slate-700 flex-1 leading-relaxed">{highlightText(segment.text, searchQuery)}</p>
-                  <span className="text-[12px] text-slate-400 flex-shrink-0 font-medium whitespace-nowrap">
+                  </Button>
+                  <p className="flex-1 text-[15px] leading-relaxed text-foreground">
+                    {highlightText(segment.text, searchQuery)}
+                  </p>
+                  <span className="flex-shrink-0 whitespace-nowrap text-[12px] font-medium text-muted-foreground">
                     {(segment.confidence * 100).toFixed(0)}%
                   </span>
                 </div>
@@ -162,26 +188,23 @@ export function TranscriptionTab({
         )}
       </div>
 
-      {/* Load more */}
       {segmentsCursor && segments.length < totalSegments && (
-        <div className="p-6 border-t border-slate-100 text-center bg-slate-50/50">
-          <button
+        <div className="border-t border-border bg-muted/30 p-6 text-center">
+          <Button
+            variant="outline"
             onClick={() => onLoadSegments(false)}
             disabled={loadingSegments}
-            className="px-6 py-2.5 bg-white text-slate-600 border border-slate-200/60 rounded-full hover:bg-slate-50 transition-all text-[14px] font-bold disabled:opacity-50 shadow-sm"
+            className="rounded-full"
           >
-            {loadingSegments ? (
-              <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
-            ) : null}
-            Cargar más ({segments.length} de {totalSegments})
-          </button>
+            {loadingSegments && <Loader2 className="animate-spin" aria-hidden="true" />}
+            {t('audioTabs.loadMore', { loaded: segments.length, total: totalSegments })}
+          </Button>
         </div>
       )}
 
-      {/* Footer info */}
       {analysis.full_transcription && analysis.full_transcription.length > 0 && (
-        <div className="px-6 pb-5 pt-3 text-[12px] font-medium text-slate-400 text-center border-t border-slate-100">
-          Transcripción total disponible en {analysis.total_segments} segmentos.
+        <div className="border-t border-border px-6 pb-5 pt-3 text-center text-[12px] font-medium text-muted-foreground">
+          {t('audioTabs.transcriptionTotal', { count: analysis.total_segments })}
         </div>
       )}
     </div>

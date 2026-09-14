@@ -1,9 +1,9 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import {
     Check,
     Loader2,
     AlertCircle,
-    X,
     RefreshCw,
     CheckCircle2,
     XCircle,
@@ -12,64 +12,62 @@ import {
     Upload,
     Timer,
     Eye,
-    Video,
-    Mic,
     Brain,
-    FileText,
     Sparkles,
-    MessageCircle,
-    Send,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { videoService } from '../services/video';
 import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
+import { Progress } from './ui/progress';
+import { Spinner } from './ui/spinner';
+import { useTranslation } from '../i18n';
+import type { TranslationKey } from '../i18n/es';
 
-// Definición de pasos con iconos y tiempos estimados
 interface ProcessingStep {
     id: number;
-    label: string;
-    icon: any;
+    labelKey: TranslationKey;
+    icon: LucideIcon;
     estimatedTime: string;
-    description: string;
+    descriptionKey: TranslationKey;
 }
 
 const PROCESSING_STEPS: ProcessingStep[] = [
     {
         id: 1,
-        label: 'Preparación',
+        labelKey: 'videoProcessing.stepPreparation',
         icon: Upload,
         estimatedTime: '~5s',
-        description: 'Compresión + carga al almacenamiento local + miniatura',
+        descriptionKey: 'videoProcessing.stepPreparationDesc',
     },
     {
         id: 2,
-        label: 'Verificación',
+        labelKey: 'videoProcessing.stepVerification',
         icon: Timer,
         estimatedTime: '~2s',
-        description: 'Validando duración (60s máx)',
+        descriptionKey: 'videoProcessing.stepVerificationDesc',
     },
     {
         id: 3,
-        label: 'Escaneo Rápido',
+        labelKey: 'videoProcessing.stepQuickScan',
         icon: Eye,
         estimatedTime: '~5s',
-        description: 'Detección de violaciones obvias',
+        descriptionKey: 'videoProcessing.stepQuickScanDesc',
     },
     {
         id: 4,
-        label: 'Análisis Profundo',
+        labelKey: 'videoProcessing.stepDeepAnalysis',
         icon: Brain,
         estimatedTime: '~15s',
-        description: 'IA de visión local + audio en paralelo',
+        descriptionKey: 'videoProcessing.stepDeepAnalysisDesc',
     },
     {
         id: 5,
-        label: 'Decisión IA',
+        labelKey: 'videoProcessing.stepDecision',
         icon: Sparkles,
         estimatedTime: '~5s',
-        description: 'Decisión final + Título automático',
+        descriptionKey: 'videoProcessing.stepDecisionDesc',
     },
 ];
 
@@ -83,6 +81,7 @@ interface VideoResult {
     razon?: string;
     duracion?: number;
     estado?: string;
+    video_url?: string;
 }
 
 interface ProcessingError {
@@ -91,16 +90,33 @@ interface ProcessingError {
     canRetry: boolean;
 }
 
+interface ClarificationQuestion {
+    id: string;
+    question: string;
+}
+
 interface ProcessingState {
     currentStep: number;
     stepStatus: 'running' | 'success' | 'warning' | 'error' | 'skipped' | 'pending';
     status: 'pending' | 'processing' | 'completed' | 'error' | 'cancelled' | 'clarification';
     message: string;
-    details?: any;
+    details?: unknown;
     videoResult?: VideoResult;
     error?: ProcessingError;
     finalStatus?: 'approved' | 'rejected' | 'review' | 'unknown';
-    clarificationQuestions?: Array<{ id: string; question: string }>;
+    clarificationQuestions?: ClarificationQuestion[];
+}
+
+interface StatusResponse {
+    status?: string;
+    step?: number;
+    message?: string;
+    details?: { errorCode?: string; canRetry?: boolean };
+    error?: ProcessingError;
+    final_result?: {
+        video?: VideoResult & { video_url?: string };
+        finalStatus?: ProcessingState['finalStatus'];
+    };
 }
 
 interface VideoProcessingModalProps {
@@ -112,6 +128,36 @@ interface VideoProcessingModalProps {
     workspaceId?: string;
 }
 
+const RESULT_STYLES: Record<
+    NonNullable<ProcessingState['finalStatus']>,
+    { surface: string; text: string; Icon: LucideIcon; labelKey: TranslationKey }
+> = {
+    approved: {
+        surface: 'bg-success-surface border-success-border',
+        text: 'text-success',
+        Icon: CheckCircle2,
+        labelKey: 'videoProcessing.approved',
+    },
+    rejected: {
+        surface: 'bg-error-surface border-error-border',
+        text: 'text-error',
+        Icon: XCircle,
+        labelKey: 'videoProcessing.rejected',
+    },
+    review: {
+        surface: 'bg-warning-surface border-warning-border',
+        text: 'text-warning',
+        Icon: Clock,
+        labelKey: 'videoProcessing.needsReview',
+    },
+    unknown: {
+        surface: 'bg-muted border-border',
+        text: 'text-muted-foreground',
+        Icon: FileVideo,
+        labelKey: 'videoProcessing.resultUnknown',
+    },
+};
+
 export function VideoProcessingModal({
     videoId,
     open,
@@ -120,6 +166,7 @@ export function VideoProcessingModal({
     onRetry,
     workspaceId,
 }: VideoProcessingModalProps) {
+    const { t } = useTranslation();
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -131,12 +178,20 @@ export function VideoProcessingModal({
         currentStep: 0,
         stepStatus: 'pending',
         status: 'pending',
-        message: 'Iniciando...',
+        message: t('videoProcessing.init'),
     });
 
     const [videoUrl, setVideoUrl] = useState<string | null>(null);
-    const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
-    const [submittingClarification, setSubmittingClarification] = useState(false);
+
+    const steps = useMemo(
+        () =>
+            PROCESSING_STEPS.map((step) => ({
+                ...step,
+                label: t(step.labelKey),
+                description: t(step.descriptionKey),
+            })),
+        [t],
+    );
 
     const stopPolling = useCallback(() => {
         if (pollingIntervalRef.current) {
@@ -159,22 +214,23 @@ export function VideoProcessingModal({
     }, [queryClient]);
 
     const applyStatusUpdate = useCallback(
-        (response: any) => {
+        (response: StatusResponse | null | undefined) => {
             if (!response) return;
 
             if (response.status === 'completed' && response.final_result) {
+                const resultVideo = response.final_result.video;
                 setState((s) => ({
                     ...s,
                     currentStep: 6,
                     status: 'completed',
                     stepStatus: 'success',
-                    message: response.message || 'Completado',
-                    videoResult: response.final_result?.video,
+                    message: response.message || t('status.completed'),
+                    videoResult: resultVideo,
                     finalStatus: response.final_result?.finalStatus,
                 }));
 
-                if (response.final_result?.video?.video_url) {
-                    setVideoUrl(response.final_result.video.video_url);
+                if (resultVideo?.video_url) {
+                    setVideoUrl(resultVideo.video_url);
                 }
 
                 stopPolling();
@@ -188,11 +244,11 @@ export function VideoProcessingModal({
                     ...s,
                     status: 'error',
                     stepStatus: 'error',
-                    message: response.message || 'Error desconocido',
+                    message: response.message || t('audio.errorUnknown'),
                     currentStep: response.step || s.currentStep,
                     error: response.error || {
                         errorCode: response.details?.errorCode || 'UNKNOWN_ERROR',
-                        message: response.message || 'Error desconocido',
+                        message: response.message || t('audio.errorUnknown'),
                         canRetry: response.details?.canRetry ?? true,
                     },
                 }));
@@ -207,7 +263,7 @@ export function VideoProcessingModal({
                     ...s,
                     status: 'cancelled',
                     stepStatus: 'error',
-                    message: response.message || 'Cancelado',
+                    message: response.message || t('status.cancelled'),
                 }));
                 stopPolling();
                 stopStream();
@@ -220,16 +276,15 @@ export function VideoProcessingModal({
                     ...s,
                     currentStep: response.step || 0,
                     stepStatus: 'running',
-                    message: response.message || 'Procesando...',
+                    message: response.message || t('status.processing'),
                     status: 'processing',
                     details: response.details,
                 }));
             }
         },
-        [invalidateVideoQueries, stopPolling, stopStream],
+        [invalidateVideoQueries, stopPolling, stopStream, t],
     );
 
-    // Create object URL for the file to preview
     useEffect(() => {
         if (videoFile) {
             const url = URL.createObjectURL(videoFile);
@@ -240,27 +295,21 @@ export function VideoProcessingModal({
         }
     }, [videoFile]);
 
-    // Función para consultar el estado (POLLING)
     const pollStatus = useCallback(async () => {
         if (!videoId) return;
 
         try {
             const response = await videoService.getVideoStatus(videoId);
-
-            // Si es undefined, probablemente autenticación falló y apiRequest manejó el redirect
             if (!response) return;
-
-            console.log('📊 Estado recibido (polling):', response);
             applyStatusUpdate(response);
-        } catch (error) {
-            console.error('Error polling status:', error);
+        } catch {
             // No detenemos el polling por errores de red temporales
         }
     }, [videoId, applyStatusUpdate]);
 
     const startPolling = useCallback(() => {
         if (pollingIntervalRef.current) return;
-        pollStatus();
+        void pollStatus();
         pollingIntervalRef.current = setInterval(pollStatus, 1500);
     }, [pollStatus]);
 
@@ -273,10 +322,10 @@ export function VideoProcessingModal({
 
             stream.onmessage = (event) => {
                 try {
-                    const payload = JSON.parse(event.data);
+                    const payload = JSON.parse(event.data) as StatusResponse;
                     applyStatusUpdate(payload);
-                } catch (err) {
-                    console.error('Error parsing SSE payload:', err);
+                } catch {
+                    // Ignora payloads SSE inválidos
                 }
             };
 
@@ -287,13 +336,11 @@ export function VideoProcessingModal({
                     startPolling();
                 }
             };
-        } catch (error) {
-            console.error('SSE no disponible, usando polling:', error);
+        } catch {
             startPolling();
         }
     }, [videoId, applyStatusUpdate, startPolling, stopStream]);
 
-    // Iniciar polling cuando se abre el modal
     useEffect(() => {
         if (!videoId || !open) {
             stopPolling();
@@ -302,48 +349,37 @@ export function VideoProcessingModal({
                 currentStep: 0,
                 stepStatus: 'pending',
                 status: 'pending',
-                message: 'Esperando video...',
+                message: t('videoProcessing.waitingVideo'),
             });
             return;
         }
 
-        console.log('🔄 Iniciando stream/polling para video:', videoId);
         sseFailedRef.current = false;
 
-        // Disparar inicio de procesamiento (Idempotente en backend)
         const startProcessing = async () => {
             try {
-                // Usar endpoint correcto sin prefijo /socio si no está configurado en backend
                 await videoService.startProcessing(videoId);
-                console.log('🚀 Procesamiento iniciado exitosamente');
-            } catch (error) {
-                console.error(
-                    '⚠️ Error al iniciar procesamiento (puede que ya esté corriendo):',
-                    error,
-                );
+            } catch {
+                // El procesamiento puede estar ya en curso
             }
         };
 
-        // Iniciar procesamiento y luego escuchar estado por SSE (fallback a polling)
-        startProcessing().then(() => {
+        void startProcessing().then(() => {
             startStatusStream();
         });
 
         return () => {
-            console.log('🔄 Deteniendo stream/polling');
             stopPolling();
             stopStream();
         };
-    }, [videoId, open, startStatusStream, stopPolling, stopStream]);
+    }, [videoId, open, startStatusStream, stopPolling, stopStream, t]);
 
     const handleClose = async () => {
         if ((state.status === 'processing' || state.status === 'pending') && videoId) {
-            console.log('Cancelling processing for', videoId);
             try {
-                // Cancelar via HTTP en lugar de WebSocket
                 await videoService.cancelProcessing(videoId);
-            } catch (e) {
-                console.error('Error cancelling:', e);
+            } catch {
+                // Ignora errores al cancelar
             }
         }
         stopPolling();
@@ -356,71 +392,23 @@ export function VideoProcessingModal({
         if (onRetry) {
             onRetry();
         }
-        handleClose();
+        void handleClose();
     };
 
-    const getResultIcon = () => {
-        if (!state.videoResult) return null;
+    const currentProgress = Math.min(state.currentStep, 5);
+    const resultStyle = RESULT_STYLES[state.finalStatus ?? 'unknown'];
+    const ResultIcon = resultStyle.Icon;
 
-        switch (state.finalStatus) {
-            case 'approved':
-                return <CheckCircle2 className="w-16 h-16 text-green-500" />;
-            case 'rejected':
-                return <XCircle className="w-16 h-16 text-red-500" />;
-            case 'review':
-                return <Clock className="w-16 h-16 text-amber-500" />;
-            default:
-                return <FileVideo className="w-16 h-16 text-gray-500" />;
-        }
-    };
-
-    const getResultColors = () => {
-        switch (state.finalStatus) {
-            case 'approved':
-                return {
-                    bg: 'bg-green-50',
-                    border: 'border-green-500',
-                    text: 'text-green-700',
-                    badge: 'bg-green-100 text-green-800',
-                };
-            case 'rejected':
-                return {
-                    bg: 'bg-red-50',
-                    border: 'border-red-500',
-                    text: 'text-red-700',
-                    badge: 'bg-red-100 text-red-800',
-                };
-            case 'review':
-                return {
-                    bg: 'bg-amber-50',
-                    border: 'border-amber-500',
-                    text: 'text-amber-700',
-                    badge: 'bg-amber-100 text-amber-800',
-                };
-            default:
-                return {
-                    bg: 'bg-gray-50',
-                    border: 'border-gray-500',
-                    text: 'text-gray-700',
-                    badge: 'bg-gray-100 text-gray-800',
-                };
-        }
-    };
-
-    const getResultLabel = () => {
-        switch (state.finalStatus) {
-            case 'approved':
-                return '✅ Video Aprobado';
-            case 'rejected':
-                return '❌ Video Rechazado';
-            case 'review':
-                return '⏳ Requiere Revisión Manual';
-            default:
-                return 'Procesamiento Completado';
-        }
-    };
-
-    const colors = getResultColors();
+    const headerTitle =
+        state.status === 'processing'
+            ? t('videoProcessing.processingTitle')
+            : state.status === 'completed'
+                ? t('videoProcessing.completedTitle')
+                : state.status === 'error'
+                    ? t('videoProcessing.errorTitleProcessing')
+                    : state.status === 'cancelled'
+                        ? t('videoProcessing.cancelledTitle')
+                        : t('videoProcessing.preparingTitle');
 
     return (
         <Dialog
@@ -434,114 +422,64 @@ export function VideoProcessingModal({
             }}
         >
             <DialogContent
-                className="max-w-6xl max-h-[90vh] overflow-y-auto bg-white text-gray-900"
+                className="max-h-[90vh] max-w-6xl overflow-y-auto"
                 onInteractOutside={(e: Event) => {
                     e.preventDefault();
                 }}
             >
-                <DialogHeader className="flex flex-row items-center justify-between pb-1">
+                <DialogHeader className="flex-row items-center justify-between pb-1">
                     <div className="text-left">
-                        <DialogTitle className="text-lg font-bold flex items-center gap-2">
+                        <DialogTitle className="flex items-center gap-2 text-lg font-bold">
                             {state.status === 'processing' && (
-                                <div className="relative">
-                                    <Loader2 className="w-5 h-5 animate-spin text-tivit-red" />
-                                    <span className="absolute inset-0 w-5 h-5 animate-ping opacity-75">
-                                        <Loader2 className="w-5 h-5 text-tivit-red" />
-                                    </span>
-                                </div>
+                                <Loader2 className="h-5 w-5 animate-spin text-primary" aria-hidden="true" />
                             )}
                             {state.status === 'completed' && (
-                                <Check className="w-5 h-5 text-green-500" />
+                                <Check className="h-5 w-5 text-success" aria-hidden="true" />
                             )}
                             {state.status === 'error' && (
-                                <AlertCircle className="w-5 h-5 text-red-500" />
+                                <AlertCircle className="h-5 w-5 text-error" aria-hidden="true" />
                             )}
                             {state.status === 'cancelled' && (
-                                <X className="w-5 h-5 text-gray-500" />
+                                <XCircle className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
                             )}
-                            {state.status === 'processing' ? (
-                                <span className="animate-pulse">Procesando Video...</span>
-                            ) : state.status === 'completed' ? (
-                                'Análisis Completado'
-                            ) : state.status === 'error' ? (
-                                'Error en el Procesamiento'
-                            ) : state.status === 'cancelled' ? (
-                                'Procesamiento Cancelado'
-                            ) : (
-                                'Preparando...'
-                            )}
+                            {headerTitle}
                         </DialogTitle>
-                        <DialogDescription className="text-xs text-gray-500">
-                            ID: {videoId}
+                        <DialogDescription className="text-xs text-muted-foreground">
+                            {t('videoProcessing.idLabel', { id: videoId ?? '' })}
                         </DialogDescription>
                     </div>
                 </DialogHeader>
 
-                {/* --- 1. Top Result Banner (Outside Grid) --- */}
                 {state.status === 'completed' && state.videoResult && (
                     <div
-                        className={`mt-2 mx-1 rounded-xl border overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500 flex items-center shadow-sm ${
-                            state.finalStatus === 'approved'
-                                ? 'bg-green-50 border-green-200'
-                                : state.finalStatus === 'rejected'
-                                  ? 'bg-red-50 border-red-200'
-                                  : 'bg-amber-50 border-amber-200'
-                        }`}
+                        className={`mx-1 mt-2 flex items-center overflow-hidden rounded-xl border shadow-sm ${resultStyle.surface}`}
+                        role="status"
+                        aria-live="polite"
                     >
-                        <div
-                            className={`p-2 flex items-center justify-center border-r ${
-                                state.finalStatus === 'approved'
-                                    ? 'border-green-100 bg-green-100/50 text-green-600'
-                                    : state.finalStatus === 'rejected'
-                                      ? 'border-red-100 bg-red-100/50 text-red-600'
-                                      : 'border-amber-100 bg-amber-100/50 text-amber-600'
-                            }`}
-                        >
-                            {state.finalStatus === 'approved' && (
-                                <CheckCircle2 className="w-6 h-6" />
-                            )}
-                            {state.finalStatus === 'rejected' && <XCircle className="w-6 h-6" />}
-                            {state.finalStatus === 'review' && <Clock className="w-6 h-6" />}
+                        <div className={`flex items-center justify-center border-r border-border p-2 ${resultStyle.text}`}>
+                            <ResultIcon className="h-6 w-6" aria-hidden="true" />
                         </div>
-
                         <div className="flex-1 px-3 py-2">
-                            <h4
-                                className={`text-base font-bold ${
-                                    state.finalStatus === 'approved'
-                                        ? 'text-green-900'
-                                        : state.finalStatus === 'rejected'
-                                          ? 'text-red-900'
-                                          : 'text-amber-900'
-                                }`}
-                            >
-                                {getResultLabel()}
+                            <h4 className={`text-base font-bold ${resultStyle.text}`}>
+                                {t(resultStyle.labelKey)}
                             </h4>
-                            <p
-                                className={`text-xs font-medium ${
-                                    state.finalStatus === 'approved'
-                                        ? 'text-green-700'
-                                        : state.finalStatus === 'rejected'
-                                          ? 'text-red-700'
-                                          : 'text-amber-700'
-                                }`}
-                            >
-                                {state.videoResult.confianzaPorcentaje}% de confianza en la decisión
-                                automatizada
+                            <p className="text-xs font-medium text-muted-foreground">
+                                {t('videoProcessing.confidenceDecision', {
+                                    percent: state.videoResult.confianzaPorcentaje ?? 0,
+                                })}
                             </p>
                         </div>
                     </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mt-4">
-                    {/* --- 2. Left Column: Video Player Only --- */}
-                    <div className="md:col-span-3 space-y-6 flex flex-col">
-                        {/* Video Player */}
-                        <div className="aspect-video bg-black rounded-xl overflow-hidden flex items-center justify-center relative shadow-md border border-gray-200">
+                <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-5">
+                    <div className="flex flex-col space-y-6 md:col-span-3">
+                        <div className="relative flex aspect-video items-center justify-center overflow-hidden rounded-xl border border-border bg-black shadow-sm">
                             {videoUrl ? (
                                 <video
                                     ref={videoRef}
                                     src={videoUrl}
-                                    className="w-full h-full object-contain"
+                                    className="h-full w-full object-contain"
                                     autoPlay
                                     muted
                                     loop
@@ -549,81 +487,77 @@ export function VideoProcessingModal({
                                     controls
                                 />
                             ) : (
-                                <div className="flex flex-col items-center gap-2 px-6 text-center text-gray-300">
-                                    <FileVideo size={48} />
-                                    <p className="font-medium text-white">Video no disponible</p>
-                                    <p className="text-sm">La URL del video estará disponible al finalizar el procesamiento.</p>
+                                <div className="flex flex-col items-center gap-2 px-6 text-center text-white/70">
+                                    <FileVideo size={48} aria-hidden="true" />
+                                    <p className="font-medium text-white">{t('videoProcessing.videoUnavailable')}</p>
+                                    <p className="text-sm">{t('videoProcessing.videoUnavailableHint')}</p>
                                 </div>
                             )}
 
                             {state.status === 'error' && (
-                                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20">
-                                    <AlertCircle size={48} className="text-red-500 mb-2" />
+                                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/80">
+                                    <AlertCircle size={48} className="mb-2 text-error" aria-hidden="true" />
                                     <h3 className="text-lg font-bold text-white">
-                                        Error en el análisis
+                                        {t('videoProcessing.analysisError')}
                                     </h3>
-                                    <p className="text-gray-300 text-sm text-center max-w-md px-4">
+                                    <p className="max-w-md px-4 text-center text-sm text-white/80">
                                         {state.message}
                                     </p>
                                 </div>
                             )}
 
-                            {/* Overlay icon only if NOT completed (since we have the banner now) */}
                             {state.status === 'completed' && state.videoResult && (
-                                <div className="absolute top-4 right-4 z-20">
-                                    <div
-                                        className={`px-3 py-1 rounded-full text-xs font-bold shadow-lg backdrop-blur-sm ${
-                                            state.finalStatus === 'approved'
-                                                ? 'bg-green-500/90 text-white'
-                                                : state.finalStatus === 'rejected'
-                                                  ? 'bg-red-500/90 text-white'
-                                                  : 'bg-amber-500/90 text-white'
-                                        }`}
+                                <div className="absolute right-4 top-4 z-20">
+                                    <span
+                                        className={`rounded-full px-3 py-1 text-xs font-bold text-white shadow-lg ${state.finalStatus === 'approved'
+                                            ? 'bg-success'
+                                            : state.finalStatus === 'rejected'
+                                                ? 'bg-error'
+                                                : 'bg-warning'
+                                            }`}
                                     >
-                                        {getResultLabel()}
-                                    </div>
+                                        {t(resultStyle.labelKey)}
+                                    </span>
                                 </div>
                             )}
                         </div>
 
-                        {/* Error Details (Keep near video if error) */}
-                        {(state.status === 'error' || state.status === 'cancelled') &&
-                            state.error && (
-                                <div className="p-6 rounded-xl bg-red-50 border border-red-200 shadow-sm">
-                                    <div className="flex items-start gap-4">
-                                        <div className="p-2 bg-red-100 rounded-full text-red-600">
-                                            <AlertCircle className="w-6 h-6" />
-                                        </div>
-                                        <div className="flex-1">
-                                            <h4 className="font-bold text-red-900 text-lg mb-1">
-                                                {state.status === 'cancelled'
-                                                    ? 'Procesamiento Cancelado'
-                                                    : 'Error de Procesamiento'}
-                                            </h4>
-                                            <p className="text-sm text-red-700 mb-4 leading-relaxed">
-                                                {state.error.message}
-                                            </p>
-                                        </div>
+                        {(state.status === 'error' || state.status === 'cancelled') && state.error && (
+                            <div className="rounded-xl border border-error-border bg-error-surface p-6 shadow-sm">
+                                <div className="flex items-start gap-4">
+                                    <div className="rounded-full bg-error-surface p-2 text-error">
+                                        <AlertCircle className="h-6 w-6" aria-hidden="true" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <h4 className="mb-1 text-lg font-bold text-error">
+                                            {state.status === 'cancelled'
+                                                ? t('videoProcessing.cancelledBanner')
+                                                : t('videoProcessing.errorBanner')}
+                                        </h4>
+                                        <p className="text-sm leading-relaxed text-foreground">
+                                            {state.error.message}
+                                        </p>
                                     </div>
                                 </div>
-                            )}
-                        {/* --- Result Details (Moved to Left Column) --- */}
+                            </div>
+                        )}
+
                         {state.status === 'completed' && state.videoResult && (
-                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-700">
+                            <div className="space-y-4">
                                 <div>
-                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">
-                                        Título Generado
+                                    <p className="mb-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                                        {t('videoProcessing.generatedTitle')}
                                     </p>
-                                    <h3 className="text-xl font-bold text-gray-900 leading-tight">
+                                    <h3 className="text-xl font-bold leading-tight text-foreground">
                                         {state.videoResult.titulo}
                                     </h3>
                                 </div>
 
                                 {state.videoResult.razon && (
-                                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-100">
-                                        <p className="text-sm font-medium text-gray-700 leading-relaxed">
-                                            <span className="font-bold text-gray-900 block mb-1">
-                                                Razón de la decisión:
+                                    <div className="rounded-lg border border-border bg-muted/40 p-4">
+                                        <p className="text-sm font-medium leading-relaxed text-muted-foreground">
+                                            <span className="mb-1 block font-bold text-foreground">
+                                                {t('videoProcessing.decisionReasonLabel')}
                                             </span>
                                             {state.videoResult.razon}
                                         </p>
@@ -632,10 +566,10 @@ export function VideoProcessingModal({
 
                                 {state.videoResult.analisis && (
                                     <details className="pt-2">
-                                        <summary className="text-sm font-semibold text-tivit-red cursor-pointer hover:underline">
-                                            Ver análisis técnico completo
+                                        <summary className="cursor-pointer text-sm font-semibold text-primary hover:underline">
+                                            {t('videoProcessing.technicalAnalysis')}
                                         </summary>
-                                        <div className="mt-3 text-xs text-gray-600 bg-gray-50 p-3 rounded border border-gray-100 font-mono leading-relaxed">
+                                        <div className="mt-3 rounded border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-muted-foreground">
                                             {state.videoResult.analisis}
                                         </div>
                                     </details>
@@ -644,162 +578,115 @@ export function VideoProcessingModal({
                         )}
                     </div>
 
-                    {/* --- 3. Right Column: Timeline Visual Mejorado --- */}
-                    <div className="md:col-span-2 space-y-4">
-                        {/* Progress Overview */}
-                        <div className="bg-linear-to-br from-gray-50 to-gray-100 rounded-xl border border-gray-200 p-4 shadow-sm">
-                            <div className="flex items-center justify-between mb-3">
-                                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">
-                                    Progreso del Análisis
+                    <div className="space-y-4 md:col-span-2">
+                        <div className="rounded-xl border border-border bg-muted/40 p-4 shadow-sm">
+                            <div className="mb-3 flex items-center justify-between">
+                                <h3 className="text-sm font-bold uppercase tracking-wide text-foreground">
+                                    {t('videoProcessing.analysisProgressTitle')}
                                 </h3>
-                                <span className="text-xs font-medium text-gray-500">
-                                    Paso {Math.min(state.currentStep, 5)}/5
+                                <span className="text-xs font-medium text-muted-foreground">
+                                    {t('videoProcessing.stepOf', { current: currentProgress })}
                                 </span>
                             </div>
 
-                            {/* Progress Bar */}
-                            <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
-                                <div
-                                    className="absolute top-0 left-0 h-full bg-gradient-to-r from-tivit-red via-red-500 to-red-400 transition-all duration-500 ease-out"
-                                    style={{
-                                        width: `${(Math.min(state.currentStep, 5) / 5) * 100}%`,
-                                    }}
-                                >
-                                    {state.status === 'processing' && (
-                                        <>
-                                            <div className="absolute right-0 top-0 h-full w-8 bg-gradient-to-r from-transparent to-white opacity-30 animate-pulse" />
-                                            <div
-                                                className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white to-transparent opacity-20 animate-[shimmer_2s_ease-in-out_infinite]"
-                                                style={{
-                                                    backgroundSize: '200% 100%',
-                                                    animation: 'shimmer 2s ease-in-out infinite',
-                                                }}
-                                            />
-                                        </>
-                                    )}
-                                </div>
-                            </div>
+                            <Progress
+                                value={(currentProgress / 5) * 100}
+                                aria-label={t('videoProcessing.analysisProgressTitle')}
+                            />
 
-                            {/* Current Step Message */}
                             {state.status === 'processing' && (
-                                <div className="mt-3 flex items-center gap-2 text-xs text-gray-600">
-                                    <div className="relative">
-                                        <Loader2 className="w-3 h-3 animate-spin text-tivit-red" />
-                                        <span className="absolute inset-0 w-3 h-3 rounded-full border border-tivit-red animate-ping opacity-75"></span>
-                                    </div>
-                                    <span className="font-medium animate-pulse">
-                                        {state.message}
-                                    </span>
+                                <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
+                                    <Loader2 className="h-3 w-3 animate-spin text-primary" aria-hidden="true" />
+                                    <span className="animate-pulse font-medium">{state.message}</span>
                                 </div>
                             )}
                         </div>
 
-                        {/* Timeline de Pasos */}
-                        <div className="bg-white rounded-xl border border-gray-200 p-4 max-h-[500px] overflow-y-auto">
+                        <div className="max-h-[500px] overflow-y-auto rounded-xl border border-border bg-card p-4">
                             <div className="space-y-3">
-                                {PROCESSING_STEPS.map((step, index) => {
+                                {steps.map((step, index) => {
                                     const isCompleted =
                                         step.id < state.currentStep || state.status === 'completed';
                                     const isActive =
-                                        step.id === state.currentStep &&
-                                        state.status === 'processing';
-                                    const isPending = step.id > state.currentStep;
+                                        step.id === state.currentStep && state.status === 'processing';
                                     const isSkipped =
-                                        state.stepStatus === 'skipped' &&
-                                        step.id === state.currentStep;
+                                        state.stepStatus === 'skipped' && step.id === state.currentStep;
                                     const Icon = step.icon;
 
                                     return (
                                         <div key={step.id} className="relative">
-                                            {/* Connecting Line */}
-                                            {index !== PROCESSING_STEPS.length - 1 && (
+                                            {index !== steps.length - 1 && (
                                                 <div
-                                                    className={`absolute left-6 top-12 w-0.5 h-6 transition-colors duration-500 ${
-                                                        isCompleted ? 'bg-green-400' : 'bg-gray-200'
-                                                    }`}
+                                                    className={`absolute left-6 top-12 h-6 w-0.5 transition-colors duration-500 ${isCompleted ? 'bg-success' : 'bg-border'
+                                                        }`}
                                                 />
                                             )}
 
                                             <div
-                                                className={`flex items-start gap-3 p-3 rounded-lg transition-all duration-300 ${
-                                                    isActive
-                                                        ? 'bg-red-50 border-2 border-red-200 shadow-md scale-[1.02]'
-                                                        : isCompleted
-                                                          ? 'bg-green-50/50 border border-green-100'
-                                                          : 'border border-transparent'
-                                                }`}
-                                            >
-                                                {/* Step Icon */}
-                                                <div
-                                                    className={`relative flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${
-                                                        isCompleted
-                                                            ? 'bg-green-500 text-white shadow-lg shadow-green-200'
-                                                            : isSkipped
-                                                              ? 'bg-gray-300 text-white'
-                                                              : isActive
-                                                                ? 'bg-tivit-red text-white shadow-lg shadow-red-200 animate-pulse'
-                                                                : 'bg-gray-100 text-gray-400'
+                                                className={`flex items-start gap-3 rounded-lg p-3 transition-all duration-300 ${isActive
+                                                    ? 'border-2 border-brand-border bg-brand-soft shadow-sm'
+                                                    : isCompleted
+                                                        ? 'border border-success-border bg-success-surface/50'
+                                                        : 'border border-transparent'
                                                     }`}
+                                            >
+                                                <div
+                                                    className={`relative flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full transition-all duration-300 ${isCompleted
+                                                        ? 'bg-success text-success-foreground'
+                                                        : isSkipped
+                                                            ? 'bg-muted text-muted-foreground'
+                                                            : isActive
+                                                                ? 'bg-primary text-primary-foreground'
+                                                                : 'bg-muted text-muted-foreground'
+                                                        }`}
                                                 >
                                                     {isCompleted ? (
-                                                        <Check
-                                                            className="w-5 h-5"
-                                                            strokeWidth={3}
-                                                        />
+                                                        <Check className="h-5 w-5" strokeWidth={3} aria-hidden="true" />
                                                     ) : isSkipped ? (
-                                                        <X className="w-5 h-5" />
+                                                        <XCircle className="h-5 w-5" aria-hidden="true" />
                                                     ) : isActive ? (
-                                                        <Loader2 className="w-5 h-5 animate-spin" />
+                                                        <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
                                                     ) : (
-                                                        <Icon className="w-5 h-5" />
+                                                        <Icon className="h-5 w-5" aria-hidden="true" />
                                                     )}
 
-                                                    {/* Pulse animation ring */}
                                                     {isActive && (
-                                                        <span className="absolute inset-0 rounded-full border-2 border-tivit-red animate-ping opacity-75" />
+                                                        <span className="absolute inset-0 animate-ping rounded-full border-2 border-primary opacity-75" />
                                                     )}
                                                 </div>
 
-                                                {/* Step Details */}
-                                                <div className="flex-1 min-w-0 pt-1">
-                                                    <div className="flex items-center justify-between mb-1">
+                                                <div className="min-w-0 flex-1 pt-1">
+                                                    <div className="mb-1 flex items-center justify-between">
                                                         <h4
-                                                            className={`font-bold text-sm transition-colors ${
-                                                                isActive
-                                                                    ? 'text-tivit-red'
-                                                                    : isCompleted
-                                                                      ? 'text-gray-900'
-                                                                      : 'text-gray-500'
-                                                            }`}
+                                                            className={`text-sm font-bold transition-colors ${isActive
+                                                                ? 'text-primary'
+                                                                : isCompleted
+                                                                    ? 'text-foreground'
+                                                                    : 'text-muted-foreground'
+                                                                }`}
                                                         >
                                                             {step.label}
                                                         </h4>
                                                         <span
-                                                            className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                                                isCompleted
-                                                                    ? 'bg-green-100 text-green-700'
-                                                                    : isSkipped
-                                                                      ? 'bg-gray-100 text-gray-600'
-                                                                      : isActive
-                                                                        ? 'bg-red-100 text-tivit-red'
-                                                                        : 'bg-gray-100 text-gray-500'
-                                                            }`}
+                                                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${isCompleted
+                                                                ? 'bg-success-surface text-success'
+                                                                : isSkipped
+                                                                    ? 'bg-muted text-muted-foreground'
+                                                                    : isActive
+                                                                        ? 'bg-brand-soft text-brand-hover'
+                                                                        : 'bg-muted text-muted-foreground'
+                                                                }`}
                                                         >
                                                             {isCompleted
-                                                                ? '✓ Listo'
+                                                                ? t('videoProcessing.done')
                                                                 : isSkipped
-                                                                  ? 'Omitido'
-                                                                  : isActive
-                                                                    ? step.estimatedTime
+                                                                    ? t('videoProcessing.skipped')
                                                                     : step.estimatedTime}
                                                         </span>
                                                     </div>
                                                     <p
-                                                        className={`text-xs transition-colors ${
-                                                            isActive
-                                                                ? 'text-gray-700 font-medium'
-                                                                : 'text-gray-500'
-                                                        }`}
+                                                        className={`text-xs transition-colors ${isActive ? 'font-medium text-foreground' : 'text-muted-foreground'
+                                                            }`}
                                                     >
                                                         {step.description}
                                                     </p>
@@ -810,13 +697,12 @@ export function VideoProcessingModal({
                                 })}
                             </div>
 
-                            {/* Completion Message */}
                             {state.status === 'completed' && (
-                                <div className="mt-4 p-3 bg-linear-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg animate-in fade-in slide-in-from-bottom-2 duration-500">
-                                    <div className="flex items-center gap-2 text-green-700">
-                                        <Sparkles className="w-4 h-4" />
+                                <div className="mt-4 rounded-lg border border-success-border bg-success-surface p-3">
+                                    <div className="flex items-center gap-2 text-success">
+                                        <Sparkles className="h-4 w-4" aria-hidden="true" />
                                         <span className="text-sm font-bold">
-                                            ¡Análisis completado exitosamente!
+                                            {t('videoProcessing.completedMessage')}
                                         </span>
                                     </div>
                                 </div>
@@ -825,85 +711,63 @@ export function VideoProcessingModal({
                     </div>
                 </div>
 
-                {/* --- 5. Footer: Action Buttons (Sticky) --- */}
-                <div className="sticky bottom-0 bg-white z-50 -mx-6 -mb-6 px-6 py-4 border-t border-gray-100 flex sm:justify-between justify-end items-center mt-6">
-                    {/* Left side of footer (optional status text) */}
-                    <div className="hidden sm:block text-xs text-gray-400">
+                <div className="sticky bottom-0 z-50 -mx-6 -mb-6 mt-6 flex items-center justify-end border-t border-border bg-card px-6 py-4 sm:justify-between">
+                    <div className="hidden text-xs text-muted-foreground sm:block" aria-live="polite">
                         {state.status === 'processing'
-                            ? 'Procesando en segundo plano...'
+                            ? t('videoProcessing.background')
                             : state.status === 'completed'
-                              ? 'Proceso finalizado.'
-                              : ''}
+                                ? t('videoProcessing.finished')
+                                : ''}
                     </div>
 
-                    {/* Right side buttons */}
-                    <div className="flex gap-3 w-full sm:w-auto">
+                    <div className="flex w-full gap-3 sm:w-auto">
                         {state.status === 'processing' || state.status === 'pending' ? (
-                            <Button
-                                variant="outline"
-                                onClick={handleClose}
-                                className="w-full sm:w-auto border-gray-300 text-gray-700 hover:bg-gray-50"
-                            >
-                                Cancelar
+                            <Button variant="outline" onClick={handleClose} className="w-full sm:w-auto">
+                                {t('common.cancel')}
                             </Button>
                         ) : state.status === 'completed' ? (
                             <>
                                 {workspaceId && workspaceId !== 'general' ? (
                                     <>
-                                        <Button
-                                            onClick={handleClose}
-                                            variant="outline"
-                                            className="flex-1 sm:flex-none"
-                                        >
-                                            Subir otro video
+                                        <Button onClick={handleClose} variant="outline" className="flex-1 sm:flex-none">
+                                            {t('videoProcessing.uploadAnother')}
                                         </Button>
                                         <Button
                                             onClick={() => {
-                                                handleClose();
+                                                void handleClose();
                                                 navigate({ to: `/proyecto/${workspaceId}` });
                                             }}
-                                            className="flex-1 sm:flex-none bg-tivit-red hover:bg-tivit-red-dark text-white font-semibold shadow-lg shadow-red-200"
+                                            className="flex-1 sm:flex-none"
                                         >
-                                            Ver Proyecto
+                                            {t('videoProcessing.viewProject')}
                                         </Button>
                                     </>
                                 ) : (
                                     <>
-                                        <Button
-                                            onClick={handleClose}
-                                            variant="outline"
-                                            className="flex-1 sm:flex-none"
-                                        >
-                                            Subir otro video
+                                        <Button onClick={handleClose} variant="outline" className="flex-1 sm:flex-none">
+                                            {t('videoProcessing.uploadAnother')}
                                         </Button>
                                         <Button
                                             onClick={() => {
-                                                handleClose();
+                                                void handleClose();
                                                 navigate({ to: '/mis-videos' });
                                             }}
-                                            className="flex-1 sm:flex-none bg-tivit-red hover:bg-tivit-red-dark text-white font-semibold shadow-lg shadow-red-200"
+                                            className="flex-1 sm:flex-none"
                                         >
-                                            Ir a Mis Videos
+                                            {t('videoProcessing.goToMyVideos')}
                                         </Button>
                                     </>
                                 )}
                             </>
                         ) : (
                             <>
-                                <Button
-                                    onClick={handleClose}
-                                    variant="outline"
-                                    className="flex-1 sm:flex-none"
-                                >
-                                    Cerrar
+                                <Button onClick={handleClose} variant="outline" className="flex-1 sm:flex-none">
+                                    {t('common.close')}
                                 </Button>
                                 {state.error?.canRetry && (
-                                    <Button
-                                        onClick={handleRetry}
-                                        className="flex-1 sm:flex-none bg-tivit-red hover:bg-tivit-red-dark text-white"
-                                    >
-                                        <RefreshCw className="w-4 h-4 mr-2" />
-                                        Reintentar
+                                    <Button onClick={handleRetry} className="flex-1 sm:flex-none">
+                                        <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                                        {t('common.retry')}
                                     </Button>
                                 )}
                             </>

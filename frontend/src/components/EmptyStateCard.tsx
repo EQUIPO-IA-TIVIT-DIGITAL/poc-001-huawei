@@ -1,5 +1,6 @@
-import { ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import type { ReactNode } from 'react';
+import { cn } from '../lib/utils';
+import { Button } from './ui/button';
 
 interface EmptyStateFeature {
   icon?: ReactNode;
@@ -14,6 +15,7 @@ interface EmptyStateCardProps {
   onPrimaryAction: () => void;
   primaryActionIcon?: ReactNode;
   features?: EmptyStateFeature[];
+  className?: string;
 }
 
 export function EmptyStateCard({
@@ -24,28 +26,27 @@ export function EmptyStateCard({
   onPrimaryAction,
   primaryActionIcon,
   features = [],
+  className,
 }: EmptyStateCardProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-      className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-12 lg:p-16 text-center"
+    <div
+      className={cn(
+        'flex flex-col items-center rounded-xl border border-dashed border-border bg-card p-10 text-center lg:p-14',
+        className,
+      )}
     >
-      <div className="flex justify-center mb-5">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center border border-gray-200/50">
-          {icon}
-        </div>
+      <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-soft text-brand [&_svg]:size-7">
+        {icon}
       </div>
-      <h3 className="text-xl font-bold text-gray-800 mb-2">{title}</h3>
-      <p className="text-gray-500 mb-6 max-w-xl mx-auto leading-relaxed">{description}</p>
+      <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+      <p className="mt-1.5 max-w-xl text-sm text-muted-foreground">{description}</p>
 
       {features.length > 0 && (
-        <div className="flex flex-wrap gap-2.5 justify-center mb-8">
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
           {features.map((feature) => (
             <span
               key={feature.label}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-red-50 to-rose-50 text-red-700 border border-red-100 rounded-full text-sm font-medium"
+              className="inline-flex items-center gap-2 rounded-full border border-brand-border bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand-hover [&_svg]:size-4"
             >
               {feature.icon}
               {feature.label}
@@ -54,15 +55,10 @@ export function EmptyStateCard({
         </div>
       )}
 
-      <motion.button
-        whileHover={{ scale: 1.03 }}
-        whileTap={{ scale: 0.97 }}
-        onClick={onPrimaryAction}
-        className="inline-flex items-center gap-2 bg-gradient-to-r from-tivit-red to-rose-600 text-white px-7 py-3.5 rounded-xl font-semibold shadow-lg shadow-red-200/40 hover:shadow-red-300/50 transition-all duration-200"
-      >
+      <Button onClick={onPrimaryAction} className="mt-7">
         {primaryActionIcon}
         {primaryActionLabel}
-      </motion.button>
-    </motion.div>
+      </Button>
+    </div>
   );
 }

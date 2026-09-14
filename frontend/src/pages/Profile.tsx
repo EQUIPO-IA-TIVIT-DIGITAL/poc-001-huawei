@@ -2,14 +2,24 @@ import { useState } from 'react';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { Camera, User, Lock, Info, Save, Key, CheckCircle, AlertCircle, Eye, EyeOff, Mail, Shield, Trash2 } from 'lucide-react';
+import { Label } from '../components/ui/label';
+import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import {
+    Camera, User, Lock, Save, Key, CheckCircle, AlertCircle,
+    Eye, EyeOff, Mail, Shield, Trash2,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useMutation } from '@tanstack/react-query';
 import { apiRequest } from '../lib/api';
+import { getErrorMessage } from '../lib/errors';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { authService } from '../services/auth';
+import { toast } from 'sonner';
+import { useTranslation } from '../i18n';
+import { cn } from '../lib/utils';
 
 const changePasswordSchema = z
     .object({
@@ -29,15 +39,17 @@ const changePasswordSchema = z
 type ChangePasswordFormData = z.infer<typeof changePasswordSchema>;
 
 export default function Profile() {
+    const { t } = useTranslation();
     const { user, verifySession, updateUser } = useAuth();
     const [nombreCompleto, setNombreCompleto] = useState(user?.nombre || '');
-    const [email, setEmail] = useState(user?.email || ''); // Note: Email might not be in user object if not returned by login
+    const [email, setEmail] = useState(user?.email || '');
     const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
     const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
     const [passwordError, setPasswordError] = useState<string | null>(null);
     const [showCurrentPwd, setShowCurrentPwd] = useState(false);
     const [showNewPwd, setShowNewPwd] = useState(false);
     const [showConfirmPwd, setShowConfirmPwd] = useState(false);
+    const [showRemovePhoto, setShowRemovePhoto] = useState(false);
 
     const {
         register,
@@ -57,104 +69,109 @@ export default function Profile() {
 
     const watchedNewPassword = watch('new_password') || '';
     const passwordChecks = [
-        { label: 'Mínimo 8 caracteres', valid: watchedNewPassword.length >= 8 },
-        { label: 'Al menos una mayúscula', valid: /[A-Z]/.test(watchedNewPassword) },
-        { label: 'Al menos un número', valid: /[0-9]/.test(watchedNewPassword) },
-    ];
+        { labelKey: 'profile.passwordMinLength', valid: watchedNewPassword.length >= 8 },
+        { labelKey: 'profile.passwordUppercase', valid: /[A-Z]/.test(watchedNewPassword) },
+        { labelKey: 'profile.passwordNumber', valid: /[0-9]/.test(watchedNewPassword) },
+    ] as const;
     const passwordStrengthScore = passwordChecks.filter((item) => item.valid).length;
-    const passwordStrengthText =
-        passwordStrengthScore <= 1 ? 'Débil' : passwordStrengthScore === 2 ? 'Media' : 'Fuerte';
+    const passwordStrengthTextKey =
+        passwordStrengthScore <= 1
+            ? 'profile.strengthWeak'
+            : passwordStrengthScore === 2
+                ? 'profile.strengthMedium'
+                : 'profile.strengthStrong';
     const passwordStrengthColor =
         passwordStrengthScore <= 1
-            ? 'bg-red-500'
+            ? 'bg-error'
             : passwordStrengthScore === 2
-                ? 'bg-amber-500'
-                : 'bg-emerald-500';
+                ? 'bg-warning'
+                : 'bg-success';
+    const passwordStrengthTextColor =
+        passwordStrengthScore <= 1
+            ? 'text-error'
+            : passwordStrengthScore === 2
+                ? 'text-warning'
+                : 'text-success';
 
-    // Mutation for uploading profile photo
     const uploadPhotoMutation = useMutation({
         mutationFn: async (base64Image: string) => {
             return await apiRequest('/api/v1/auth/upload-profile-photo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: base64Image })
+                body: JSON.stringify({ image: base64Image }),
             });
         },
         onSuccess: () => {
-            setProfileSuccess("Foto actualizada correctamente");
-            // Refrescar el contexto de usuario desde el backend para obtener la nueva foto
-            verifySession().finally(() => {
+            setProfileSuccess(t('profile.photoUpdated'));
+            void verifySession().finally(() => {
                 setTimeout(() => setProfileSuccess(null), 3000);
             });
         },
-        onError: (error: any) => {
-            alert(error.message || 'Error al subir la foto');
-        }
+        onError: (error: unknown) => {
+            toast.error(getErrorMessage(error) || t('profile.photoUpdateError'));
+        },
     });
 
-    // Mutation for removing profile photo
     const removePhotoMutation = useMutation({
         mutationFn: async () => {
             return await apiRequest('/api/v1/auth/profile', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_photo: true })
+                body: JSON.stringify({ remove_photo: true }),
             });
         },
         onSuccess: () => {
             updateUser({ foto_url: '' });
-            setProfileSuccess("Foto eliminada correctamente");
+            setProfileSuccess(t('profile.photoRemoved'));
             setTimeout(() => setProfileSuccess(null), 3000);
             void verifySession();
         },
-        onError: (error: any) => {
-            alert(error.message || 'Error al eliminar la foto');
-        }
+        onError: (error: unknown) => {
+            toast.error(getErrorMessage(error) || t('profile.photoRemoveError'));
+        },
     });
 
-    // Mutation for updating profile
     const updateProfileMutation = useMutation({
-        mutationFn: async (data: { nombre_completo: string, email: string }) => {
+        mutationFn: async (data: { nombre_completo: string; email: string }) => {
             return await apiRequest('/api/v1/auth/profile', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
+                body: JSON.stringify(data),
             });
         },
         onSuccess: () => {
-            setProfileSuccess('Perfil actualizado correctamente');
-            authService.updateLocalUser({ nombre: nombreCompleto, email: email });
+            setProfileSuccess(t('profile.profileUpdated'));
+            authService.updateLocalUser({ nombre: nombreCompleto, email });
             setTimeout(() => setProfileSuccess(null), 3000);
         },
-        onError: (error) => {
-            console.error('Failed to update profile', error);
-        }
+        onError: (error: unknown) => {
+            toast.error(getErrorMessage(error) || t('profile.profileUpdateError'));
+        },
     });
 
-    // Mutation for changing password
     const changePasswordMutation = useMutation({
         mutationFn: async (data: { current_password: string; new_password: string }) => {
             return await apiRequest('/api/v1/auth/change-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
+                body: JSON.stringify(data),
             });
         },
         onSuccess: () => {
-            setPasswordSuccess('Contraseña actualizada correctamente');
+            setPasswordSuccess(t('profile.passwordUpdated'));
             reset();
             setPasswordError(null);
             setTimeout(() => setPasswordSuccess(null), 3000);
         },
-        onError: (error: any) => {
-            setPasswordError(error.message || 'Error al cambiar la contraseña');
-        }
+        onError: (error: unknown) => {
+            setPasswordError(getErrorMessage(error) || t('profile.passwordUpdateError'));
+        },
     });
 
     const handleUpdateProfile = () => {
         updateProfileMutation.mutate({
             nombre_completo: nombreCompleto,
-            email: email
+            email,
         });
     };
 
@@ -167,41 +184,32 @@ export default function Profile() {
     });
 
     return (
-        <div className="max-w-5xl mx-auto space-y-8 py-4">
-            {/* ── Profile Hero Banner ── */}
-            <div className="relative bg-white rounded-[32px] overflow-hidden shadow-sm border border-slate-200/60">
-                {/* Subtle glow instead of hard banner */}
-                <div className="absolute top-0 right-0 w-[500px] h-[500px] rounded-full blur-3xl -mr-32 -mt-32 opacity-30 pointer-events-none bg-blue-50" />
-                <div className="h-32 bg-slate-50/50 border-b border-slate-100/60">
-                    <div className="absolute inset-0 h-32 opacity-20"
-                        style={{ backgroundImage: 'radial-gradient(circle at 20% 50%, rgba(59,130,246,0.3) 0%, transparent 50%), radial-gradient(circle at 80% 50%, rgba(220,38,38,0.2) 0%, transparent 50%)' }}
-                    />
-                </div>
+        <div className="mx-auto max-w-5xl space-y-8 py-4">
+            <div className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
+                <div className="pointer-events-none absolute -mr-32 -mt-32 right-0 top-0 h-[500px] w-[500px] rounded-full bg-brand-soft opacity-60 blur-3xl" />
+                <div className="h-32 border-b border-border bg-muted/40" />
 
-                {/* Profile info overlay */}
-                <div className="relative bg-transparent px-8 lg:px-10 pb-8 pt-0 z-10">
-                    {/* Avatar — overlapping the banner */}
-                    <div className="flex flex-col sm:flex-row items-center sm:items-end gap-6 -mt-16">
-                        <div className="relative group shrink-0">
-                            <div
-                                className="cursor-pointer transition-transform duration-300 hover:scale-105"
+                <div className="relative z-10 px-8 pb-8 pt-0 lg:px-10">
+                    <div className="-mt-16 flex flex-col items-center gap-6 sm:flex-row sm:items-end">
+                        <div className="group relative shrink-0">
+                            <button
+                                type="button"
+                                className="cursor-pointer transition-transform duration-300 hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                 onClick={() => document.getElementById('avatar-input')?.click()}
+                                aria-label={t('profile.changePhoto')}
                             >
-                                {user?.foto_url ? (
-                                    <img
-                                        src={user.foto_url}
-                                        alt="Profile"
-                                        className="h-32 w-32 rounded-[28px] object-cover border-4 border-white shadow-sm ring-1 ring-slate-200/60 bg-white"
-                                    />
-                                ) : (
-                                    <div className="h-32 w-32 rounded-[28px] bg-red-50 text-red-500 flex items-center justify-center text-4xl font-bold border-4 border-white shadow-sm ring-1 ring-slate-200/60 bg-white">
+                                <Avatar className="h-32 w-32 rounded-2xl border-4 border-card">
+                                    {user?.foto_url ? (
+                                        <AvatarImage src={user.foto_url} alt={t('profile.profilePhotoAlt')} />
+                                    ) : null}
+                                    <AvatarFallback className="rounded-2xl bg-brand-soft text-4xl font-bold text-primary">
                                         {user?.nombre?.substring(0, 2).toUpperCase() || 'US'}
-                                    </div>
-                                )}
-                                <div className="absolute -bottom-2 -right-2 bg-white p-2.5 rounded-xl text-slate-500 border border-slate-200 shadow-sm hover:text-red-500 hover:border-red-200 transition-colors">
-                                    <Camera size={18} />
+                                    </AvatarFallback>
+                                </Avatar>
+                                <div className="absolute -bottom-2 -right-2 rounded-xl border border-border bg-card p-2.5 text-muted-foreground shadow-sm transition-colors group-hover:border-brand-border group-hover:text-primary">
+                                    <Camera size={18} aria-hidden="true" />
                                 </div>
-                            </div>
+                            </button>
                             <input
                                 type="file"
                                 id="avatar-input"
@@ -211,7 +219,7 @@ export default function Profile() {
                                     const file = e.target.files?.[0];
                                     if (file) {
                                         if (file.size > 5 * 1024 * 1024) {
-                                            alert("La imagen no debe superar los 5MB");
+                                            toast.error(t('profile.photoTooLarge'));
                                             return;
                                         }
                                         const reader = new FileReader();
@@ -226,119 +234,127 @@ export default function Profile() {
                             />
                         </div>
 
-                        {/* Name + meta */}
-                        <div className="flex-1 text-center sm:text-left pb-2">
-                            <h1 className="text-3xl font-bold text-slate-800 tracking-tight">{user?.nombre || 'Usuario'}</h1>
-                            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4 mt-2 text-[14px] font-medium text-slate-500">
-                                <span className="flex items-center gap-1.5"><User size={15} className="text-slate-400" /> @{user?.username || '—'}</span>
-                                {user?.email && <span className="flex items-center gap-1.5"><Mail size={15} className="text-slate-400" /> {user.email}</span>}
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[12px] font-bold bg-slate-50 border border-slate-200/60 text-slate-600 uppercase tracking-widest shadow-sm">
-                                    <Shield size={13} className="text-slate-400" /> {user?.tipo || 'socio'}
+                        <div className="flex-1 pb-2 text-center sm:text-left">
+                            <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                                {user?.nombre || t('profile.userFallback')}
+                            </h1>
+                            <div className="mt-2 flex flex-wrap items-center justify-center gap-4 text-[14px] font-medium text-muted-foreground sm:justify-start">
+                                <span className="flex items-center gap-1.5">
+                                    <User size={15} className="text-muted-foreground" aria-hidden="true" /> @
+                                    {user?.username || '—'}
+                                </span>
+                                {user?.email && (
+                                    <span className="flex items-center gap-1.5">
+                                        <Mail size={15} className="text-muted-foreground" aria-hidden="true" />
+                                        {user.email}
+                                    </span>
+                                )}
+                                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-3 py-1 text-[12px] font-bold uppercase tracking-widest text-muted-foreground shadow-sm">
+                                    <Shield size={13} className="text-muted-foreground" aria-hidden="true" />
+                                    {user?.tipo || 'socio'}
                                 </span>
                             </div>
                         </div>
 
-                        {/* Photo actions */}
-                        <div className="flex items-center gap-3 pb-2 flex-wrap justify-center sm:justify-start">
+                        <div className="flex flex-wrap items-center justify-center gap-3 pb-2 sm:justify-start">
                             <Button
                                 variant="outline"
-                                className="rounded-full font-bold text-[13px] border-slate-200/80 text-slate-600 hover:bg-slate-50/80 shadow-sm"
+                                className="rounded-full"
                                 onClick={() => document.getElementById('avatar-input')?.click()}
                             >
-                                <Camera size={16} className="mr-2" /> Cambiar foto
+                                <Camera aria-hidden="true" /> {t('profile.changePhoto')}
                             </Button>
                             {user?.foto_url && (
                                 <Button
                                     variant="ghost"
-                                    className="rounded-full font-bold text-[13px] text-red-500 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100"
-                                    onClick={() => {
-                                        if (window.confirm('¿Seguro que deseas eliminar tu foto de perfil?')) {
-                                            removePhotoMutation.mutate();
-                                        }
-                                    }}
+                                    className="rounded-full text-error hover:bg-error-surface hover:text-error"
+                                    onClick={() => setShowRemovePhoto(true)}
                                     disabled={removePhotoMutation.isPending}
                                 >
-                                    <Trash2 size={16} className="mr-1.5" />
-                                    {removePhotoMutation.isPending ? '...' : 'Eliminar foto'}
+                                    <Trash2 aria-hidden="true" />
+                                    {removePhotoMutation.isPending ? t('common.deleting') : t('profile.deletePhoto')}
                                 </Button>
                             )}
                         </div>
                     </div>
 
-                    {/* Upload feedback */}
                     {uploadPhotoMutation.isPending && (
-                        <div className="mt-3 flex items-center gap-2 text-sm text-gray-500 animate-pulse">
-                            <div className="h-3 w-3 rounded-full border-2 border-gray-400 border-t-transparent animate-spin" />
-                            Subiendo foto…
+                        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground animate-pulse" aria-live="polite">
+                            <div className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+                            {t('profile.uploadingPhoto')}
                         </div>
                     )}
                     {profileSuccess && (
-                        <div className="mt-3 flex items-center gap-2 text-green-600 text-sm">
-                            <CheckCircle size={16} /> {profileSuccess}
+                        <div className="mt-3 flex items-center gap-2 text-sm text-success" aria-live="polite">
+                            <CheckCircle size={16} aria-hidden="true" /> {profileSuccess}
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* ── Two-column form area ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Personal Information */}
-                <Card className="border border-slate-200/60 shadow-sm rounded-[32px] overflow-hidden h-full bg-white">
-                    <CardContent className="p-8 lg:p-10 h-full flex flex-col">
-                        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-3 mb-8 tracking-tight">
-                            <div className="w-10 h-10 rounded-[12px] bg-slate-50 border border-slate-200/60 flex items-center justify-center shadow-sm"><User size={20} className="text-slate-500" /></div>
-                            Información Personal
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+                <Card className="h-full overflow-hidden shadow-sm">
+                    <CardContent className="flex h-full flex-col p-8 lg:p-10">
+                        <h2 className="mb-8 flex items-center gap-3 text-xl font-bold tracking-tight text-foreground">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-muted shadow-sm">
+                                <User size={20} className="text-muted-foreground" aria-hidden="true" />
+                            </div>
+                            {t('profile.personalInfo')}
                         </h2>
 
                         <div className="flex h-full flex-col gap-6">
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-400 uppercase tracking-widest pl-1">Nombre de usuario</label>
-                                <div className="relative">
-                                    <Input
-                                        value={user?.username || ''}
-                                        disabled
-                                        className="bg-slate-50/50 border-slate-200/60 text-slate-400 pr-10 rounded-full py-6 text-[15px] font-medium opacity-70 cursor-not-allowed"
-                                    />
-                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300">
-                                        <Info size={18} />
-                                    </div>
-                                </div>
-                                <div className="pl-1 min-h-[20px]">
-                                    <p className="text-[12px] font-medium text-slate-400">Este valor no se puede cambiar</p>
-                                </div>
+                                <Label htmlFor="profile-username" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.username')}
+                                </Label>
+                                <Input
+                                    id="profile-username"
+                                    value={user?.username || ''}
+                                    disabled
+                                    className="cursor-not-allowed opacity-70"
+                                />
+                                <p className="min-h-[20px] text-xs font-medium text-muted-foreground">
+                                    {t('profile.usernameHint')}
+                                </p>
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-500 uppercase tracking-widest pl-1">Nombre completo</label>
+                                <Label htmlFor="profile-fullname" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.fullName')}
+                                </Label>
                                 <Input
+                                    id="profile-fullname"
                                     value={nombreCompleto}
                                     onChange={(e) => setNombreCompleto(e.target.value)}
-                                    className="bg-slate-50/50 border-slate-200/60 focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 rounded-full py-6 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
                                 />
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-500 uppercase tracking-widest pl-1">Correo electrónico</label>
+                                <Label htmlFor="profile-email" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.email')}
+                                </Label>
                                 <Input
+                                    id="profile-email"
+                                    type="email"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
-                                    className="bg-slate-50/50 border-slate-200/60 focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10 rounded-full py-6 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
                                 />
                             </div>
 
                             <div className="mt-8">
                                 <Button
-                                    className="w-full bg-red-500 hover:bg-red-600 text-white rounded-full py-6 text-[15px] font-bold shadow-md transition-colors disabled:opacity-50"
+                                    className="w-full"
                                     onClick={handleUpdateProfile}
                                     disabled={updateProfileMutation.isPending}
+                                    loading={updateProfileMutation.isPending}
                                 >
-                                    <Save size={18} className="mr-2" />
-                                    {updateProfileMutation.isPending ? 'Guardando cambios...' : 'Guardar Información'}
+                                    <Save aria-hidden="true" />
+                                    {updateProfileMutation.isPending ? t('profile.savingChanges') : t('profile.saveInfo')}
                                 </Button>
-                                <div className="min-h-[24px] mt-4 flex justify-center">
+                                <div className="mt-4 flex min-h-[24px] justify-center">
                                     {profileSuccess && (
-                                        <div className="flex items-center gap-2 text-emerald-600 text-[14px] font-bold animate-in fade-in">
-                                            <CheckCircle size={16} /> {profileSuccess}
+                                        <div className="flex items-center gap-2 text-[14px] font-bold text-success">
+                                            <CheckCircle size={16} aria-hidden="true" /> {profileSuccess}
                                         </div>
                                     )}
                                 </div>
@@ -347,81 +363,101 @@ export default function Profile() {
                     </CardContent>
                 </Card>
 
-                {/* Change Password */}
-                <Card className="border border-slate-200/60 shadow-sm rounded-[32px] overflow-hidden h-full bg-white">
-                    <CardContent className="p-8 lg:p-10 h-full flex flex-col">
-                        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-3 mb-8 tracking-tight">
-                            <div className="w-10 h-10 rounded-[12px] bg-red-50 border border-red-100/60 flex items-center justify-center shadow-sm"><Lock size={20} className="text-red-500" /></div>
-                            Cambiar Contraseña
+                <Card className="h-full overflow-hidden shadow-sm">
+                    <CardContent className="flex h-full flex-col p-8 lg:p-10">
+                        <h2 className="mb-8 flex items-center gap-3 text-xl font-bold tracking-tight text-foreground">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-brand-border bg-brand-soft shadow-sm">
+                                <Lock size={20} className="text-primary" aria-hidden="true" />
+                            </div>
+                            {t('profile.changePassword')}
                         </h2>
 
                         <div className="flex h-full flex-col gap-6">
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-500 uppercase tracking-widest pl-1">Contraseña actual</label>
+                                <Label htmlFor="current-password" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.currentPassword')}
+                                </Label>
                                 <div className="relative">
                                     <Input
+                                        id="current-password"
                                         type={showCurrentPwd ? 'text' : 'password'}
                                         {...register('current_password')}
-                                        placeholder="••••••••"
-                                        className="bg-slate-50/50 border-slate-200/60 focus:border-red-400 focus:ring-4 focus:ring-red-500/10 rounded-full py-6 pr-12 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
+                                        placeholder={t('profile.currentPasswordPlaceholder')}
+                                        invalid={!!errors.current_password}
+                                        className="pr-12"
                                     />
                                     <button
                                         type="button"
-                                        onClick={() => setShowCurrentPwd(v => !v)}
-                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                                        onClick={() => setShowCurrentPwd((v) => !v)}
+                                        aria-label={showCurrentPwd ? t('profile.hidePassword') : t('profile.showPassword')}
+                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
                                     >
-                                        {showCurrentPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                                        {showCurrentPwd ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                                     </button>
                                 </div>
-                                <div className="pl-1 min-h-[20px]">
+                                <div className="min-h-[20px]">
                                     {errors.current_password && (
-                                        <p className="text-[12px] font-medium text-red-500">{errors.current_password.message}</p>
+                                        <p className="text-xs font-medium text-error">{errors.current_password.message}</p>
                                     )}
                                 </div>
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-500 uppercase tracking-widest pl-1">Nueva contraseña</label>
+                                <Label htmlFor="new-password" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.newPassword')}
+                                </Label>
                                 <div className="relative">
                                     <Input
+                                        id="new-password"
                                         type={showNewPwd ? 'text' : 'password'}
                                         {...register('new_password')}
-                                        placeholder="Mínimo 8 caracteres"
-                                        className="bg-slate-50/50 border-slate-200/60 focus:border-red-400 focus:ring-4 focus:ring-red-500/10 rounded-full py-6 pr-12 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
+                                        placeholder={t('profile.newPasswordPlaceholder')}
+                                        invalid={!!errors.new_password}
+                                        className="pr-12"
                                     />
                                     <button
                                         type="button"
-                                        onClick={() => setShowNewPwd(v => !v)}
-                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                                        onClick={() => setShowNewPwd((v) => !v)}
+                                        aria-label={showNewPwd ? t('profile.hidePassword') : t('profile.showPassword')}
+                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
                                     >
-                                        {showNewPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                                        {showNewPwd ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                                     </button>
                                 </div>
-                                <div className="pl-1 min-h-[14px]">
+                                <div className="min-h-[14px]">
                                     {errors.new_password && (
-                                        <p className="text-[12px] font-medium text-red-500">{errors.new_password.message}</p>
+                                        <p className="text-xs font-medium text-error">{errors.new_password.message}</p>
                                     )}
                                 </div>
-                                
-                                <div className="rounded-[20px] border border-slate-100 bg-slate-50/50 p-4 space-y-3 mt-1 shadow-sm">
-                                    <div className="flex items-center justify-between text-[11px] uppercase tracking-widest font-bold text-slate-400">
-                                        <span>Fortaleza</span>
-                                        <span className={`font-bold ${
-                                            passwordStrengthScore <= 1 ? 'text-red-500' : 
-                                            passwordStrengthScore === 2 ? 'text-amber-500' : 'text-emerald-500'
-                                        }`}>{passwordStrengthText}</span>
+
+                                <div className="mt-1 space-y-3 rounded-2xl border border-border bg-muted/40 p-4 shadow-sm">
+                                    <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                                        <span>{t('profile.strength')}</span>
+                                        <span className={cn('font-bold', passwordStrengthTextColor)}>
+                                            {t(passwordStrengthTextKey)}
+                                        </span>
                                     </div>
-                                    <div className="h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                                         <div
-                                            className={`h-full transition-all duration-300 ${passwordStrengthColor}`}
+                                            className={cn('h-full transition-all duration-300', passwordStrengthColor)}
                                             style={{ width: `${(passwordStrengthScore / 3) * 100}%` }}
                                         />
                                     </div>
                                     <ul className="space-y-1.5 pt-1">
                                         {passwordChecks.map((check) => (
-                                            <li key={check.label} className={`text-[12px] font-medium flex items-center gap-2 ${check.valid ? 'text-emerald-600' : 'text-slate-400'}`}>
-                                                <CheckCircle size={14} className={check.valid ? 'text-emerald-500' : 'text-slate-300'} />
-                                                <span>{check.label}</span>
+                                            <li
+                                                key={check.labelKey}
+                                                className={cn(
+                                                    'flex items-center gap-2 text-[12px] font-medium',
+                                                    check.valid ? 'text-success' : 'text-muted-foreground',
+                                                )}
+                                            >
+                                                <CheckCircle
+                                                    size={14}
+                                                    className={check.valid ? 'text-success' : 'text-muted-foreground/50'}
+                                                    aria-hidden="true"
+                                                />
+                                                <span>{t(check.labelKey)}</span>
                                             </li>
                                         ))}
                                     </ul>
@@ -429,25 +465,30 @@ export default function Profile() {
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-[12px] font-bold text-slate-500 uppercase tracking-widest pl-1">Confirmar nueva contraseña</label>
+                                <Label htmlFor="confirm-password" className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
+                                    {t('profile.confirmPassword')}
+                                </Label>
                                 <div className="relative">
                                     <Input
+                                        id="confirm-password"
                                         type={showConfirmPwd ? 'text' : 'password'}
                                         {...register('confirm_password')}
-                                        placeholder="Repite la contraseña"
-                                        className="bg-slate-50/50 border-slate-200/60 focus:border-red-400 focus:ring-4 focus:ring-red-500/10 rounded-full py-6 pr-12 text-[15px] font-medium text-slate-800 transition-all shadow-sm"
+                                        placeholder={t('profile.confirmPasswordPlaceholder')}
+                                        invalid={!!errors.confirm_password}
+                                        className="pr-12"
                                     />
                                     <button
                                         type="button"
-                                        onClick={() => setShowConfirmPwd(v => !v)}
-                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                                        onClick={() => setShowConfirmPwd((v) => !v)}
+                                        aria-label={showConfirmPwd ? t('profile.hidePassword') : t('profile.showPassword')}
+                                        className="absolute right-4 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
                                     >
-                                        {showConfirmPwd ? <EyeOff size={18} /> : <Eye size={18} />}
+                                        {showConfirmPwd ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
                                     </button>
                                 </div>
-                                <div className="pl-1 min-h-[20px]">
+                                <div className="min-h-[20px]">
                                     {errors.confirm_password && (
-                                        <p className="text-[12px] font-medium text-red-500">{errors.confirm_password.message}</p>
+                                        <p className="text-xs font-medium text-error">{errors.confirm_password.message}</p>
                                     )}
                                 </div>
                             </div>
@@ -455,22 +496,23 @@ export default function Profile() {
                             <div className="mt-8">
                                 <Button
                                     variant="outline"
-                                    className="w-full bg-white border-slate-200/80 text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-full py-6 text-[15px] font-bold shadow-sm transition-colors disabled:opacity-50"
+                                    className="w-full"
                                     onClick={handleChangePassword}
                                     disabled={changePasswordMutation.isPending || !isValid}
+                                    loading={changePasswordMutation.isPending}
                                 >
-                                    <Key size={18} className="mr-2 text-slate-400" />
-                                    {changePasswordMutation.isPending ? 'Cambiando contraseña...' : 'Cambiar Contraseña'}
+                                    <Key aria-hidden="true" />
+                                    {changePasswordMutation.isPending ? t('profile.changingPassword') : t('profile.changePassword')}
                                 </Button>
-                                <div className="min-h-[24px] mt-4 flex justify-center flex-col items-center gap-1">
+                                <div className="mt-4 flex min-h-[24px] flex-col items-center justify-center gap-1">
                                     {passwordSuccess && (
-                                        <div className="flex items-center gap-2 text-emerald-600 text-[14px] font-bold animate-in fade-in">
-                                            <CheckCircle size={16} /> {passwordSuccess}
+                                        <div className="flex items-center gap-2 text-[14px] font-bold text-success" aria-live="polite">
+                                            <CheckCircle size={16} aria-hidden="true" /> {passwordSuccess}
                                         </div>
                                     )}
                                     {passwordError && (
-                                        <div className="flex items-center gap-2 text-rose-600 text-[14px] font-bold animate-in fade-in">
-                                            <AlertCircle size={16} /> {passwordError}
+                                        <div className="flex items-center gap-2 text-[14px] font-bold text-error" aria-live="polite">
+                                            <AlertCircle size={16} aria-hidden="true" /> {passwordError}
                                         </div>
                                     )}
                                 </div>
@@ -480,7 +522,18 @@ export default function Profile() {
                 </Card>
             </div>
 
-
+            <ConfirmDialog
+                open={showRemovePhoto}
+                onOpenChange={setShowRemovePhoto}
+                onConfirm={() => {
+                    removePhotoMutation.mutate();
+                    setShowRemovePhoto(false);
+                }}
+                title={t('profile.photoRemoveTitle')}
+                description={t('profile.photoRemoveDescription')}
+                confirmText={t('profile.deletePhoto')}
+                loading={removePhotoMutation.isPending}
+            />
         </div>
     );
 }

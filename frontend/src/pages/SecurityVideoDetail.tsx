@@ -1,40 +1,105 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from '@tanstack/react-router';
 import { toast } from 'sonner';
-import { 
-  obtenerVideo, 
+import {
+  obtenerVideo,
   obtenerEventosVideo,
-  SecurityVideo, 
+  SecurityVideo,
   EventoSeguridad,
-  EstadoSecurityVideo
+  EstadoSecurityVideo,
 } from '../services/securityVideoService';
+import {
+  ArrowLeft,
+  Video,
+  FileText,
+  FileDown,
+  BarChart3,
+  AlertTriangle,
+  Zap,
+  CheckCircle2,
+  ClipboardList,
+  User,
+  Car,
+  Search,
+  Film,
+  CalendarDays,
+  Timer,
+} from 'lucide-react';
+import { PageContainer } from '../components/ui/page-container';
+import { PageHeader } from '../components/ui/page-header';
+import { Button } from '../components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { LoadingState } from '../components/ui/loading-state';
+import { ErrorState } from '../components/ui/error-state';
+import { EmptyState } from '../components/ui/empty-state';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { useTranslation } from '../i18n';
+
+const ESTADO_META: Record<string, { labelKey: string; status: AppStatus }> = {
+  [EstadoSecurityVideo.UPLOADING]: { labelKey: 'securityDetail.statusUploading', status: 'uploading' },
+  [EstadoSecurityVideo.UPLOADED]: { labelKey: 'securityDetail.statusUploaded', status: 'pending' },
+  [EstadoSecurityVideo.PROCESSING]: { labelKey: 'securityDetail.statusProcessing', status: 'processing' },
+  [EstadoSecurityVideo.ANALYZING]: { labelKey: 'securityDetail.statusAnalyzing', status: 'processing' },
+  [EstadoSecurityVideo.COMPLETED]: { labelKey: 'securityDetail.statusCompleted', status: 'completed' },
+  [EstadoSecurityVideo.ERROR]: { labelKey: 'securityDetail.statusError', status: 'failed' },
+  [EstadoSecurityVideo.DETECTING_MOTION]: { labelKey: 'securityDetail.statusMotion', status: 'processing' },
+  [EstadoSecurityVideo.MOTION_DETECTED]: { labelKey: 'securityDetail.statusMotionDetected', status: 'processing' },
+  [EstadoSecurityVideo.CLASSIFYING]: { labelKey: 'securityDetail.statusClassifying', status: 'processing' },
+  [EstadoSecurityVideo.CLASSIFIED]: { labelKey: 'securityDetail.statusClassified', status: 'processing' },
+  [EstadoSecurityVideo.DEEP_ANALYZING]: { labelKey: 'securityDetail.statusDeepAnalyzing', status: 'processing' },
+  [EstadoSecurityVideo.GENERATING_REPORT]: { labelKey: 'securityDetail.statusGeneratingReport', status: 'processing' },
+};
+
+const RIESGO_META: Record<
+  string,
+  { labelKey: string; variant: 'success' | 'warning' | 'destructive'; Icon: typeof AlertTriangle }
+> = {
+  BAJO: { labelKey: 'securityDetail.riskLowLabel', variant: 'success', Icon: CheckCircle2 },
+  MEDIO: { labelKey: 'securityDetail.riskMediumLabel', variant: 'warning', Icon: Zap },
+  ALTO: { labelKey: 'securityDetail.riskHighLabel', variant: 'warning', Icon: AlertTriangle },
+  CRITICO: { labelKey: 'securityDetail.riskCriticalLabel', variant: 'destructive', Icon: AlertTriangle },
+};
+
+type TranslationKey = Parameters<ReturnType<typeof useTranslation>['t']>[0];
 
 export default function SecurityVideoDetail() {
   const params = useParams({ strict: false });
   const videoId = params.videoId as string;
   const navigate = useNavigate();
-  
+  const { t } = useTranslation();
+
   const [video, setVideo] = useState<SecurityVideo | null>(null);
   const [eventos, setEventos] = useState<EventoSeguridad[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [filtroClasificacion, setFiltroClasificacion] = useState<string>('TODOS');
 
   useEffect(() => {
     cargarDatos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId]);
 
   const cargarDatos = async () => {
     try {
       setLoading(true);
+      setError(false);
       const [videoData, eventosData] = await Promise.all([
         obtenerVideo(videoId),
-        obtenerEventosVideo(videoId)
+        obtenerEventosVideo(videoId),
       ]);
       setVideo(videoData);
       setEventos(eventosData);
-    } catch (error) {
-      console.error('Error cargando datos:', error);
-      toast.error('Error al cargar el video');
+    } catch {
+      setError(true);
+      toast.error(t('securityDetail.loadError'));
     } finally {
       setLoading(false);
     }
@@ -44,9 +109,10 @@ export default function SecurityVideoDetail() {
     return evento.nivel_riesgo || evento.analisis_detallado?.gemini_video?.nivel_riesgo || 'BAJO';
   };
 
-  const eventosFiltrados = filtroClasificacion === 'TODOS'
-    ? eventos
-    : eventos.filter(e => getNivelRiesgo(e) === filtroClasificacion);
+  const eventosFiltrados =
+    filtroClasificacion === 'TODOS'
+      ? eventos
+      : eventos.filter((e) => getNivelRiesgo(e) === filtroClasificacion);
 
   const formatDuration = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
@@ -61,53 +127,42 @@ export default function SecurityVideoDetail() {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const getEstadoBadge = (estado: EstadoSecurityVideo) => {
-    const badges: Record<EstadoSecurityVideo, { text: string; color: string }> = {
-      [EstadoSecurityVideo.UPLOADING]: { text: 'Subiendo', color: 'bg-sky-100 text-sky-800' },
-      [EstadoSecurityVideo.UPLOADED]: { text: 'Subido', color: 'bg-blue-100 text-blue-800' },
-      [EstadoSecurityVideo.PROCESSING]: { text: 'Procesando', color: 'bg-yellow-100 text-yellow-800' },
-      [EstadoSecurityVideo.ANALYZING]: { text: 'Analizando', color: 'bg-indigo-100 text-indigo-800' },
-      [EstadoSecurityVideo.COMPLETED]: { text: 'Completado', color: 'bg-green-100 text-green-800' },
-      [EstadoSecurityVideo.ERROR]: { text: 'Error', color: 'bg-red-100 text-red-800' },
-      [EstadoSecurityVideo.DETECTING_MOTION]: { text: 'Detectando movimiento', color: 'bg-purple-100 text-purple-800' },
-      [EstadoSecurityVideo.MOTION_DETECTED]: { text: 'Movimiento detectado', color: 'bg-purple-100 text-purple-800' },
-      [EstadoSecurityVideo.CLASSIFYING]: { text: 'Clasificando', color: 'bg-indigo-100 text-indigo-800' },
-      [EstadoSecurityVideo.CLASSIFIED]: { text: 'Clasificado', color: 'bg-violet-100 text-violet-800' },
-      [EstadoSecurityVideo.DEEP_ANALYZING]: { text: 'Análisis profundo', color: 'bg-pink-100 text-pink-800' },
-      [EstadoSecurityVideo.GENERATING_REPORT]: { text: 'Generando reporte', color: 'bg-orange-100 text-orange-800' },
-    };
-    const badge = badges[estado];
-    return <span className={`px-3 py-1 rounded-full text-sm font-medium ${badge.color}`}>{badge.text}</span>;
-  };
-
-  const getRiesgoBadge = (nivel: string) => {
-    const badges: Record<string, { text: string; color: string; icon: string }> = {
-      'BAJO': { text: 'Bajo', color: 'bg-green-100 text-green-800', icon: '✓' },
-      'MEDIO': { text: 'Medio', color: 'bg-yellow-100 text-yellow-800', icon: '⚡' },
-      'ALTO': { text: 'Alto', color: 'bg-orange-100 text-orange-800', icon: '⚠️' },
-      'CRITICO': { text: 'Crítico', color: 'bg-red-100 text-red-800', icon: '🚨' },
-    };
-    const badge = badges[nivel] || badges['BAJO'];
-    return (
-      <span className={`px-3 py-1 rounded-full text-sm font-medium ${badge.color} inline-flex items-center gap-1`}>
-        <span>{badge.icon}</span> {badge.text}
-      </span>
-    );
+    return `${hours.toString().padStart(2, '0')}:${minutes
+      .toString()
+      .padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   const getVideoLabel = (videoData: SecurityVideo) => {
     return videoData.metadata_tecnico?.filename_original || `Video ${videoData.id}`;
   };
 
-  if (loading) {
+  const riesgoBadge = (nivel: string) => {
+    const meta = RIESGO_META[nivel] || RIESGO_META.BAJO;
+    const { Icon } = meta;
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Cargando detalles del video...</p>
+      <Badge variant={meta.variant} className="gap-1">
+        <Icon aria-hidden="true" />
+        {t(meta.labelKey as TranslationKey)}
+      </Badge>
+    );
+  };
+
+  if (loading) {
+    return <LoadingState label={t('securityDetail.loading')} className="min-h-[60vh]" />;
+  }
+
+  if (error && !video) {
+    return (
+      <div className="mx-auto max-w-3xl p-6">
+        <ErrorState
+          title={t('securityDetail.loadError')}
+          description={t('common.errorGeneric')}
+          onRetry={cargarDatos}
+        />
+        <div className="mt-4">
+          <Button variant="outline" onClick={() => navigate({ to: '/security' })}>
+            {t('securityDetail.back')}
+          </Button>
         </div>
       </div>
     );
@@ -115,16 +170,16 @@ export default function SecurityVideoDetail() {
 
   if (!video) {
     return (
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        <div className="text-center">
-          <p className="text-gray-600">Video no encontrado</p>
-          <button
-            onClick={() => navigate({ to: '/security' })}
-            className="mt-4 text-blue-600 hover:text-blue-800"
-          >
-            ← Volver al listado
-          </button>
-        </div>
+      <div className="mx-auto max-w-3xl p-6">
+        <EmptyState
+          icon={<Video aria-hidden="true" />}
+          title={t('securityDetail.notFound')}
+          action={
+            <Button onClick={() => navigate({ to: '/security' })}>
+              {t('securityDetail.back')}
+            </Button>
+          }
+        />
       </div>
     );
   }
@@ -132,242 +187,329 @@ export default function SecurityVideoDetail() {
   const stats = video.estadisticas || {};
   const eventosPorRiesgo = stats.eventos_por_riesgo || {};
   const riesgoCounts = {
-    critico: eventosPorRiesgo['CRITICO'] || eventos.filter(e => getNivelRiesgo(e) === 'CRITICO').length,
-    alto: eventosPorRiesgo['ALTO'] || eventos.filter(e => getNivelRiesgo(e) === 'ALTO').length,
-    medio: eventosPorRiesgo['MEDIO'] || eventos.filter(e => getNivelRiesgo(e) === 'MEDIO').length,
-    bajo: eventosPorRiesgo['BAJO'] || eventos.filter(e => getNivelRiesgo(e) === 'BAJO').length,
+    critico:
+      eventosPorRiesgo['CRITICO'] || eventos.filter((e) => getNivelRiesgo(e) === 'CRITICO').length,
+    alto: eventosPorRiesgo['ALTO'] || eventos.filter((e) => getNivelRiesgo(e) === 'ALTO').length,
+    medio: eventosPorRiesgo['MEDIO'] || eventos.filter((e) => getNivelRiesgo(e) === 'MEDIO').length,
+    bajo: eventosPorRiesgo['BAJO'] || eventos.filter((e) => getNivelRiesgo(e) === 'BAJO').length,
   };
 
+  const estadoMeta = ESTADO_META[video.estado];
+
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      {/* Header con navegación */}
-      <div className="mb-6">
-        <button
-          onClick={() => navigate({ to: '/security' })}
-          className="text-blue-600 hover:text-blue-800 mb-4 inline-flex items-center gap-2"
-        >
-          ← Volver al listado
-        </button>
-        <h1 className="text-3xl font-bold text-gray-900">Detalle de Video de Seguridad</h1>
-      </div>
+    <PageContainer className="pb-16">
+      <Button
+        variant="ghost"
+        onClick={() => navigate({ to: '/security' })}
+        className="w-fit px-0 hover:bg-transparent"
+      >
+        <ArrowLeft aria-hidden="true" />
+        {t('securityDetail.back')}
+      </Button>
+
+      <PageHeader icon={Video} title={t('securityDetail.title')} />
 
       {/* Información general del video */}
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <div className="flex items-start justify-between mb-4">
+      <Card variant="elevated">
+        <CardHeader className="flex-row items-start justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-semibold text-gray-900">{getVideoLabel(video)}</h2>
-            <p className="text-gray-600">Video de seguridad</p>
+            <CardTitle className="text-2xl">{getVideoLabel(video)}</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">{t('securityDetail.subtitle')}</p>
           </div>
-          {getEstadoBadge(video.estado)}
-        </div>
+          {estadoMeta && (
+            <StatusBadge
+              status={estadoMeta.status}
+              label={t(estadoMeta.labelKey as TranslationKey)}
+            />
+          )}
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <p className="text-sm text-muted-foreground">{t('securityDetail.file')}</p>
+              <p className="text-lg font-semibold text-foreground">{getVideoLabel(video)}</p>
+            </div>
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <p className="text-sm text-muted-foreground">{t('securityDetail.duration')}</p>
+              <p className="text-lg font-semibold text-foreground">
+                {formatDuration(video.duracion_segundos)}
+              </p>
+            </div>
+            {video.tiempo_procesamiento_segundos && (
+              <div className="rounded-lg border border-border bg-muted/50 p-4">
+                <p className="text-sm text-muted-foreground">
+                  {t('securityDetail.processingTime')}
+                </p>
+                <p className="text-lg font-semibold text-foreground">
+                  {formatDuration(video.tiempo_procesamiento_segundos)}
+                </p>
+              </div>
+            )}
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-sm text-gray-600">Archivo</p>
-            <p className="text-lg font-semibold text-gray-900">{getVideoLabel(video)}</p>
-          </div>
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-sm text-gray-600">Duración</p>
-            <p className="text-lg font-semibold text-gray-900">{formatDuration(video.duracion_segundos)}</p>
-          </div>
-          {video.tiempo_procesamiento_segundos && (
-            <div className="bg-gray-50 p-4 rounded-lg">
-              <p className="text-sm text-gray-600">Tiempo de procesamiento</p>
-              <p className="text-lg font-semibold text-gray-900">{formatDuration(video.tiempo_procesamiento_segundos)}</p>
+          {video.fecha_creacion && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <CalendarDays size={13} aria-hidden="true" />
+                {video.fecha_creacion}
+              </span>
+              {video.tiempo_procesamiento_segundos && (
+                <span className="flex items-center gap-1.5">
+                  <Timer size={13} aria-hidden="true" />
+                  {formatDuration(video.tiempo_procesamiento_segundos)}
+                </span>
+              )}
             </div>
           )}
-        </div>
 
-        {/* Reportes */}
-        {(video.reporte_txt_url || video.reporte_pdf_url) && (
-          <div className="mt-6 pt-6 border-t border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">📄 Reportes Generados</h3>
-            <div className="flex gap-3">
-              {video.reporte_txt_url && (
-                <a
-                  href={video.reporte_txt_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                >
-                  📝 Descargar TXT
-                </a>
-              )}
-              {video.reporte_pdf_url && (
-                <a
-                  href={video.reporte_pdf_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  📄 Descargar PDF
-                </a>
-              )}
+          {/* Reportes */}
+          {(video.reporte_txt_url || video.reporte_pdf_url) && (
+            <div className="border-t border-border pt-6">
+              <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold text-foreground">
+                <FileText size={18} aria-hidden="true" />
+                {t('securityDetail.reports')}
+              </h3>
+              <div className="flex flex-wrap gap-3">
+                {video.reporte_txt_url && (
+                  <Button asChild>
+                    <a href={video.reporte_txt_url} target="_blank" rel="noopener noreferrer">
+                      <FileDown aria-hidden="true" />
+                      {t('securityDetail.downloadTxt')}
+                    </a>
+                  </Button>
+                )}
+                {video.reporte_pdf_url && (
+                  <Button variant="danger" asChild>
+                    <a href={video.reporte_pdf_url} target="_blank" rel="noopener noreferrer">
+                      <FileText aria-hidden="true" />
+                      {t('securityDetail.downloadPdf')}
+                    </a>
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Estadísticas */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Total Eventos</p>
-              <p className="text-3xl font-bold text-blue-600">{stats.total_eventos ?? eventos.length}</p>
-            </div>
-            <span className="text-4xl">📊</span>
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Riesgo Crítico/Alto</p>
-              <p className="text-3xl font-bold text-red-600">{riesgoCounts.critico + riesgoCounts.alto}</p>
-            </div>
-            <span className="text-4xl">🚨</span>
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Riesgo Medio</p>
-              <p className="text-3xl font-bold text-yellow-600">{riesgoCounts.medio}</p>
-            </div>
-            <span className="text-4xl">⚡</span>
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-600">Riesgo Bajo</p>
-              <p className="text-3xl font-bold text-green-600">{riesgoCounts.bajo}</p>
-            </div>
-            <span className="text-4xl">✓</span>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-4">
+        <StatCard
+          icon={<BarChart3 size={20} aria-hidden="true" />}
+          label={t('securityDetail.totalEvents')}
+          value={stats.total_eventos ?? eventos.length}
+          tone="info"
+        />
+        <StatCard
+          icon={<AlertTriangle size={20} aria-hidden="true" />}
+          label={t('securityDetail.criticalHigh')}
+          value={riesgoCounts.critico + riesgoCounts.alto}
+          tone="error"
+        />
+        <StatCard
+          icon={<Zap size={20} aria-hidden="true" />}
+          label={t('securityDetail.mediumRisk')}
+          value={riesgoCounts.medio}
+          tone="warning"
+        />
+        <StatCard
+          icon={<CheckCircle2 size={20} aria-hidden="true" />}
+          label={t('securityDetail.lowRisk')}
+          value={riesgoCounts.bajo}
+          tone="success"
+        />
       </div>
 
       {/* Resumen ejecutivo */}
       {stats.resumen_ejecutivo && (
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">📋 Resumen Ejecutivo</h3>
-          <p className="text-gray-700">{stats.resumen_ejecutivo}</p>
-          {stats.nivel_riesgo_global && (
-            <div className="mt-3 flex items-center gap-2">
-              <span className="text-sm font-medium text-gray-600">Nivel de riesgo global:</span>
-              {getRiesgoBadge(stats.nivel_riesgo_global)}
-            </div>
-          )}
-          {stats.total_personas_detectadas > 0 && (
-            <p className="text-sm text-gray-500 mt-2">
-              👤 {stats.total_personas_detectadas} personas detectadas • 🚗 {stats.total_vehiculos_detectados || 0} vehículos detectados
-            </p>
-          )}
-        </div>
+        <Card variant="elevated">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ClipboardList size={18} aria-hidden="true" />
+              {t('securityDetail.executiveSummary')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-foreground">{stats.resumen_ejecutivo}</p>
+            {stats.nivel_riesgo_global && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-muted-foreground">
+                  {t('securityDetail.globalRisk')}
+                </span>
+                {riesgoBadge(stats.nivel_riesgo_global)}
+              </div>
+            )}
+            {stats.total_personas_detectadas > 0 && (
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <User size={14} aria-hidden="true" />
+                  {t('securityDetail.detectedPeople', {
+                    count: stats.total_personas_detectadas,
+                  })}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Car size={14} aria-hidden="true" />
+                  {t('securityDetail.detectedVehicles', {
+                    count: stats.total_vehiculos_detectados || 0,
+                  })}
+                </span>
+              </p>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Lista de eventos */}
-      <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-semibold text-gray-900">
-            Timeline de Eventos ({eventosFiltrados.length})
-          </h3>
-          <select
-            value={filtroClasificacion}
-            onChange={(e) => setFiltroClasificacion(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="TODOS">Todos los eventos</option>
-            <option value="CRITICO">Riesgo Crítico</option>
-            <option value="ALTO">Riesgo Alto</option>
-            <option value="MEDIO">Riesgo Medio</option>
-            <option value="BAJO">Riesgo Bajo</option>
-          </select>
-        </div>
-
-        {eventosFiltrados.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-500">No hay eventos para mostrar</p>
+      <Card variant="elevated">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-4">
+          <CardTitle className="text-xl">
+            {t('securityDetail.timeline', { count: eventosFiltrados.length })}
+          </CardTitle>
+          <div className="w-full sm:w-64">
+            <Select value={filtroClasificacion} onValueChange={setFiltroClasificacion}>
+              <SelectTrigger aria-label={t('securityDetail.filterLabel')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="TODOS">{t('securityDetail.filterAll')}</SelectItem>
+                <SelectItem value="CRITICO">{t('securityDetail.riskCritical')}</SelectItem>
+                <SelectItem value="ALTO">{t('securityDetail.riskHigh')}</SelectItem>
+                <SelectItem value="MEDIO">{t('securityDetail.riskMedium')}</SelectItem>
+                <SelectItem value="BAJO">{t('securityDetail.riskLow')}</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-        ) : (
-          <div className="space-y-4">
-            {eventosFiltrados.map((evento) => (
-              <div
-                key={evento.id}
-                className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      {getRiesgoBadge(getNivelRiesgo(evento))}
-                      <span className="text-sm text-gray-600">
-                        {formatTimestamp(evento.timestamp_inicio)} - {formatTimestamp(evento.timestamp_fin)}
-                      </span>
-                      <span className="text-sm text-gray-500">
-                        ({evento.duracion.toFixed(1)}s)
-                      </span>
-                    </div>
-                    <p className="text-gray-900">{evento.descripcion || evento.descripcion_gemini}</p>
-                    {evento.confianza && (
-                      <p className="text-sm text-gray-600 mt-1">
-                        Confianza: {(evento.confianza * 100).toFixed(1)}%
+        </CardHeader>
+        <CardContent>
+          {eventosFiltrados.length === 0 ? (
+            <EmptyState
+              icon={<Search aria-hidden="true" />}
+              title={t('securityDetail.noEvents')}
+              className="border-0"
+            />
+          ) : (
+            <div className="space-y-4">
+              {eventosFiltrados.map((evento) => (
+                <div
+                  key={evento.id}
+                  className="rounded-xl border border-border bg-card p-4 transition-shadow hover:shadow-card"
+                >
+                  <div className="mb-3 flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="mb-2 flex flex-wrap items-center gap-3">
+                        {riesgoBadge(getNivelRiesgo(evento))}
+                        <span className="text-sm text-muted-foreground">
+                          {formatTimestamp(evento.timestamp_inicio)} -{' '}
+                          {formatTimestamp(evento.timestamp_fin)}
+                        </span>
+                        <span className="text-sm text-muted-foreground">
+                          ({evento.duracion.toFixed(1)}s)
+                        </span>
+                      </div>
+                      <p className="text-foreground">
+                        {evento.descripcion || evento.descripcion_gemini}
                       </p>
-                    )}
-                    {(evento.personas_count > 0 || evento.vehiculos_count > 0) && (
-                      <div className="flex gap-3 mt-1">
-                        {evento.personas_count > 0 && (
-                          <span className="text-xs text-gray-500">👤 {evento.personas_count} persona(s)</span>
-                        )}
-                        {evento.vehiculos_count > 0 && (
-                          <span className="text-xs text-gray-500">🚗 {evento.vehiculos_count} vehículo(s)</span>
-                        )}
+                      {evento.confianza && (
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {t('securityDetail.confidence', {
+                            percent: (evento.confianza * 100).toFixed(1),
+                          })}
+                        </p>
+                      )}
+                      {(evento.personas_count > 0 || evento.vehiculos_count > 0) && (
+                        <div className="mt-1 flex gap-3 text-xs text-muted-foreground">
+                          {evento.personas_count > 0 && (
+                            <span className="flex items-center gap-1">
+                              <User size={12} aria-hidden="true" />
+                              {t('securityDetail.peopleCount', { count: evento.personas_count })}
+                            </span>
+                          )}
+                          {evento.vehiculos_count > 0 && (
+                            <span className="flex items-center gap-1">
+                              <Car size={12} aria-hidden="true" />
+                              {t('securityDetail.vehicleCount', { count: evento.vehiculos_count })}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {evento.analisis_detallado &&
+                    Object.keys(evento.analisis_detallado).length > 0 && (
+                      <div className="mt-3 border-t border-border pt-3">
+                        <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                          <Search size={14} aria-hidden="true" />
+                          {t('securityDetail.analysisDetailed')}
+                        </p>
+                        <div className="rounded bg-muted p-3">
+                          <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
+                            {JSON.stringify(evento.analisis_detallado, null, 2)}
+                          </pre>
+                        </div>
                       </div>
                     )}
-                  </div>
+                  {!evento.analisis_detallado &&
+                    evento.analisis_profundo &&
+                    Object.keys(evento.analisis_profundo).length > 0 && (
+                      <div className="mt-3 border-t border-border pt-3">
+                        <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                          <Search size={14} aria-hidden="true" />
+                          {t('securityDetail.analysisDeep')}
+                        </p>
+                        <div className="rounded bg-muted p-3">
+                          <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
+                            {JSON.stringify(evento.analisis_profundo, null, 2)}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+
+                  {evento.clip_url && (
+                    <div className="mt-3">
+                      <Button variant="link" size="sm" className="px-0" asChild>
+                        <a href={evento.clip_url} target="_blank" rel="noopener noreferrer">
+                          <Film aria-hidden="true" />
+                          {t('securityDetail.viewClip')}
+                        </a>
+                      </Button>
+                    </div>
+                  )}
                 </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </PageContainer>
+  );
+}
 
-                {/* Análisis detallado */}
-                {evento.analisis_detallado && Object.keys(evento.analisis_detallado).length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-gray-200">
-                    <p className="text-sm font-semibold text-gray-700 mb-2">🔍 Análisis Detallado:</p>
-                    <div className="bg-gray-50 p-3 rounded text-sm text-gray-700">
-                      <pre className="whitespace-pre-wrap font-mono text-xs">
-                        {JSON.stringify(evento.analisis_detallado, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-                {/* Fallback: análisis profundo (legacy) */}
-                {!evento.analisis_detallado && evento.analisis_profundo && Object.keys(evento.analisis_profundo).length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-gray-200">
-                    <p className="text-sm font-semibold text-gray-700 mb-2">🔍 Análisis Profundo:</p>
-                    <div className="bg-gray-50 p-3 rounded text-sm text-gray-700">
-                      <pre className="whitespace-pre-wrap font-mono text-xs">
-                        {JSON.stringify(evento.analisis_profundo, null, 2)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
+function StatCard({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  tone: 'info' | 'error' | 'warning' | 'success';
+}) {
+  const toneClasses = {
+    info: 'bg-info-surface text-info',
+    error: 'bg-error-surface text-error',
+    warning: 'bg-warning-surface text-warning',
+    success: 'bg-success-surface text-success',
+  } as const;
 
-                {/* Clip */}
-                {evento.clip_url && (
-                  <div className="mt-3">
-                    <a
-                      href={evento.clip_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-blue-600 hover:text-blue-800 inline-flex items-center gap-1"
-                    >
-                      🎬 Ver clip del evento →
-                    </a>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+  return (
+    <Card variant="elevated" className="flex items-center justify-between p-6">
+      <div>
+        <p className="text-sm text-muted-foreground">{label}</p>
+        <p className="text-3xl font-bold text-foreground">{value}</p>
       </div>
-    </div>
+      <span className={`rounded-lg p-2.5 ${toneClasses[tone]}`}>{icon}</span>
+    </Card>
   );
 }

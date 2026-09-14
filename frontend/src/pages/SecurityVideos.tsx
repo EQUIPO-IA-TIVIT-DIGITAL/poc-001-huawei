@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { securityVideoService, SecurityVideo } from '../services/securityVideoService';
+import { getErrorMessage } from '../lib/errors';
 import { toast } from 'sonner';
 import {
   Video,
@@ -10,28 +11,80 @@ import {
   FileText,
   Trash2,
   RefreshCw,
-  Loader2,
-  CheckCircle,
-  RotateCcw
+  RotateCcw,
+  CalendarDays,
+  Timer,
 } from 'lucide-react';
+import { PageContainer, PageSection } from '../components/ui/page-container';
+import { PageHeader } from '../components/ui/page-header';
+import { Button } from '../components/ui/button';
+import { Card, CardContent } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { EmptyState } from '../components/ui/empty-state';
+import { LoadingState } from '../components/ui/loading-state';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useTranslation, type TranslationKey } from '../i18n';
+
+const ALL_ESTADOS = 'all';
+
+const ESTADO_OPTIONS: { value: string; labelKey: TranslationKey }[] = [
+  { value: ALL_ESTADOS, labelKey: 'securityVideos.estadoAll' },
+  { value: 'uploading', labelKey: 'securityVideos.estadoUploading' },
+  { value: 'uploaded', labelKey: 'securityVideos.estadoUploaded' },
+  { value: 'motion_detecting', labelKey: 'securityVideos.estadoMotionDetecting' },
+  { value: 'classifying', labelKey: 'securityVideos.estadoClassifying' },
+  { value: 'deep_analyzing', labelKey: 'securityVideos.estadoDeepAnalyzing' },
+  { value: 'generating_report', labelKey: 'securityVideos.estadoGeneratingReport' },
+  { value: 'completed', labelKey: 'securityVideos.estadoCompleted' },
+  { value: 'error', labelKey: 'securityVideos.estadoError' },
+];
+
+const PROCESSING_ESTADOS = [
+  'uploading',
+  'uploaded',
+  'motion_detecting',
+  'motion_detected',
+  'analyzing',
+  'classifying',
+  'deep_analyzing',
+  'generating_report',
+];
+
+const statusFromEstado = (estado: string): AppStatus => {
+  if (estado === 'completed') return 'completed';
+  if (estado === 'error') return 'failed';
+  if (estado === 'uploading') return 'uploading';
+  return 'processing';
+};
 
 export default function SecurityVideos() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [videos, setVideos] = useState<SecurityVideo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filtroEstado, setFiltroEstado] = useState<string>('');
+  const [filtroEstado, setFiltroEstado] = useState<string>(ALL_ESTADOS);
+  const [deleteTarget, setDeleteTarget] = useState<SecurityVideo | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const prevStatusRef = useRef<Record<string, { estado: string; hasReport: boolean }>>({});
   const hasLoadedOnceRef = useRef(false);
 
   useEffect(() => {
     cargarVideos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtroEstado]);
 
   // Auto-refresh cada 10 segundos si hay videos en procesamiento
   useEffect(() => {
-    const hasProcessingVideos = videos.some(v => 
-      ['uploading', 'uploaded', 'motion_detecting', 'motion_detected', 'analyzing', 'classifying', 'deep_analyzing', 'generating_report'].includes(v.estado)
-    );
+    const hasProcessingVideos = videos.some((v) => PROCESSING_ESTADOS.includes(v.estado));
 
     if (hasProcessingVideos) {
       const interval = setInterval(() => {
@@ -45,8 +98,8 @@ export default function SecurityVideos() {
   const cargarVideos = async () => {
     try {
       setLoading(true);
-      const params: any = { limit: 50 };
-      if (filtroEstado) {
+      const params: { limit: number; estado?: string } = { limit: 50 };
+      if (filtroEstado && filtroEstado !== ALL_ESTADOS) {
         params.estado = filtroEstado;
       }
 
@@ -58,8 +111,12 @@ export default function SecurityVideos() {
         nextVideos.forEach((video) => {
           const hasReport = Boolean(video.reporte_pdf_url || video.reporte_txt_url);
           const prev = prevMap[video.id];
-          if (video.estado === 'completed' && hasReport && (!prev || prev.estado !== 'completed' || !prev.hasReport)) {
-            toast.success(`Reporte listo: ${getVideoLabel(video)}`);
+          if (
+            video.estado === 'completed' &&
+            hasReport &&
+            (!prev || prev.estado !== 'completed' || !prev.hasReport)
+          ) {
+            toast.success(t('securityVideos.reportReady', { name: getVideoLabel(video) }));
           }
         });
       }
@@ -67,53 +124,43 @@ export default function SecurityVideos() {
       prevStatusRef.current = Object.fromEntries(
         nextVideos.map((video) => [
           video.id,
-          { estado: video.estado, hasReport: Boolean(video.reporte_pdf_url || video.reporte_txt_url) }
-        ])
+          { estado: video.estado, hasReport: Boolean(video.reporte_pdf_url || video.reporte_txt_url) },
+        ]),
       );
 
       hasLoadedOnceRef.current = true;
       setVideos(nextVideos);
-    } catch (error: any) {
-      toast.error(error.message || 'Error cargando videos');
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     } finally {
       setLoading(false);
     }
-  };
-
-  const getEstadoIcon = (estado: string) => {
-    const estadosEnProgreso = ['uploading', 'uploaded', 'motion_detecting', 'motion_detected', 'analyzing', 'classifying', 'deep_analyzing', 'generating_report'];
-    if (estadosEnProgreso.includes(estado)) {
-      return <Loader2 className="w-4 h-4 animate-spin" />;
-    }
-    if (estado === 'completed') {
-      return <CheckCircle className="w-4 h-4" />;
-    }
-    return null;
   };
 
   const handleReintentar = async (videoId: string) => {
     try {
       const res = await securityVideoService.reintentarAnalisis(videoId);
       if (res.success) {
-        toast.success(res.message || 'Análisis reiniciado correctamente');
+        toast.success(res.message || t('securityVideos.retrySuccess'));
         cargarVideos();
       }
-    } catch (error: any) {
-      toast.error(error.message || 'Error reintentando análisis');
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     }
   };
 
-  const handleEliminar = async (videoId: string) => {
-    if (!confirm('¿Estás seguro de eliminar este video? Esta acción no se puede deshacer.')) {
-      return;
-    }
-
+  const handleEliminar = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await securityVideoService.eliminarVideo(videoId);
-      toast.success('Video eliminado correctamente');
+      await securityVideoService.eliminarVideo(deleteTarget.id);
+      toast.success(t('securityVideos.deleted'));
+      setDeleteTarget(null);
       cargarVideos();
-    } catch (error: any) {
-      toast.error(error.message || 'Error eliminando video');
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -134,273 +181,256 @@ export default function SecurityVideos() {
   };
 
   const readyCount = videos.filter(
-    (video) => video.estado === 'completed' && (video.reporte_pdf_url || video.reporte_txt_url)
+    (video) => video.estado === 'completed' && (video.reporte_pdf_url || video.reporte_txt_url),
   ).length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-8 px-4">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <Video className="w-8 h-8 text-blue-600" />
-              <div className="flex items-center gap-4">
-                <div>
-                  <h1 className="text-3xl font-bold text-gray-800">
-                    Videos de Seguridad
-                  </h1>
-                  <p className="text-gray-600">
-                    Sube un video y recibe el reporte cuando este listo
-                  </p>
-                </div>
-                {readyCount > 0 && (
-                  <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold bg-green-100 text-green-800">
-                    Reportes listos: {readyCount}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => navigate({ to: '/security/upload' })}
-                className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-              >
-                <Plus className="w-5 h-5" />
-                Subir Video
-              </button>
-            </div>
-          </div>
+    <PageContainer className="pb-16">
+      <PageHeader
+        icon={Video}
+        title={t('securityVideos.title')}
+        description={t('securityVideos.description')}
+        actions={
+          <>
+            {readyCount > 0 && (
+              <Badge variant="success">{t('securityVideos.readyReports', { count: readyCount })}</Badge>
+            )}
+            <Button onClick={() => navigate({ to: '/security/upload' })}>
+              <Plus aria-hidden="true" />
+              {t('securityVideos.upload')}
+            </Button>
+          </>
+        }
+      />
 
-          {/* Filtros */}
-          <div className="flex gap-4 items-center">
-            <label className="text-sm font-medium text-gray-700">Estado:</label>
-            <select
-              value={filtroEstado}
-              onChange={(e) => setFiltroEstado(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="">Todos</option>
-              <option value="uploading">Subiendo al servidor</option>
-              <option value="uploaded">Listo para analizar</option>
-              <option value="motion_detecting">Detectando movimiento</option>
-              <option value="classifying">Clasificando eventos</option>
-              <option value="deep_analyzing">Análisis profundo</option>
-              <option value="generating_report">Generando reporte</option>
-              <option value="completed">Completado</option>
-              <option value="error">Error</option>
-            </select>
-            <button
-              onClick={cargarVideos}
-              className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              <RefreshCw className="w-4 h-4" />
-              Actualizar
-            </button>
-          </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="w-full sm:w-72">
+          <Select value={filtroEstado} onValueChange={setFiltroEstado}>
+            <SelectTrigger aria-label={t('securityVideos.filterLabel')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ESTADO_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
-
-        {/* Loading */}
-        {loading && (
-          <div className="bg-white rounded-lg shadow-md p-12 text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
-            <p className="text-gray-600">Cargando videos...</p>
-          </div>
-        )}
-
-        {/* Empty State */}
-        {!loading && videos.length === 0 && (
-          <div className="bg-white rounded-lg shadow-md p-12 text-center">
-            <Video className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-xl font-semibold text-gray-700 mb-2">
-              No hay videos de seguridad
-            </h3>
-            <p className="text-gray-600 mb-6">
-              Sube tu primer video de cámara de seguridad para comenzar el análisis
-            </p>
-            <button
-              onClick={() => navigate({ to: '/security/upload' })}
-              className="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="w-5 h-5" />
-              Subir Video
-            </button>
-          </div>
-        )}
-
-        {/* Lista de videos */}
-        {!loading && videos.length > 0 && (
-          <div className="grid gap-6">
-            {videos.map((video) => (
-              <div
-                key={video.id}
-                className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow"
-              >
-                <div className="p-6">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <h3 className="text-xl font-semibold text-gray-800 mb-2">
-                        {getVideoLabel(video)}
-                      </h3>
-                      <div className="flex flex-wrap gap-4 text-sm text-gray-600">
-                        {video.duracion_segundos > 0 && (
-                          <div className="flex items-center gap-1">
-                            <Clock className="w-4 h-4" />
-                            {securityVideoService.formatDuration(video.duracion_segundos)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <span
-                      className={`px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2 ${securityVideoService.getEstadoColor(
-                        video.estado
-                      )}`}
-                    >
-                      {getEstadoIcon(video.estado)}
-                      {securityVideoService.getEstadoTexto(video.estado)}
-                    </span>
-                  </div>
-
-                  {/* Estadísticas */}
-                  {video.estadisticas && Object.keys(video.estadisticas).length > 0 && (
-                    <div className="grid grid-cols-4 gap-3 mb-4 p-4 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="text-xs text-gray-600">Total Eventos</p>
-                        <p className="text-lg font-semibold text-gray-800">
-                          {video.eventos_count || video.estadisticas.total_eventos || 0}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600">Críticos</p>
-                        <p className="text-lg font-semibold text-red-600">
-                          {video.estadisticas.eventos_por_riesgo?.CRITICO || 0}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600">Alto Riesgo</p>
-                        <p className="text-lg font-semibold text-orange-600">
-                          {video.estadisticas.eventos_por_riesgo?.ALTO || 0}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600">Medio / Bajo</p>
-                        <p className="text-lg font-semibold text-yellow-600">
-                          {(video.estadisticas.eventos_por_riesgo?.MEDIO || 0) + (video.estadisticas.eventos_por_riesgo?.BAJO || 0)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Alerta de eventos críticos o de alto riesgo */}
-                  {video.estadisticas?.eventos_por_riesgo && (video.estadisticas.eventos_por_riesgo.CRITICO > 0 || video.estadisticas.eventos_por_riesgo.ALTO > 0) && (
-                    <div className="flex items-center gap-2 p-3 bg-orange-50 border border-orange-200 rounded-lg mb-4">
-                      <AlertTriangle className="w-5 h-5 text-orange-600" />
-                      <span className="text-sm font-medium text-orange-800">
-                        Este video tiene eventos de riesgo alto/crítico que requieren atención
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Acciones */}
-                  <div className="flex gap-3">
-                    {video.estado === 'uploading' && (
-                      <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg flex-1">
-                        <Loader2 className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" />
-                        <div className="text-sm">
-                          <p className="font-medium text-blue-900">Subiendo</p>
-                          <p className="text-blue-700">El archivo se esta cargando. Espera unos momentos...</p>
-                        </div>
-                      </div>
-                    )}
-                    {video.estado === 'completed' && (
-                      <>
-                        <button
-                          onClick={() => navigate({ to: `/security/${video.id}` })}
-                          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                        >
-                          <FileText className="w-4 h-4" />
-                          Ver Reporte
-                        </button>
-                        {video.reporte_pdf_url && (
-                          <a
-                            href={video.reporte_pdf_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                          >
-                            <FileText className="w-4 h-4" />
-                            Descargar PDF
-                          </a>
-                        )}
-                      </>
-                    )}
-                    {video.estado === 'uploaded' && (
-                      <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                        <Loader2 className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" />
-                        <div className="text-sm">
-                          <p className="font-medium text-blue-900">Analisis en cola</p>
-                          <p className="text-blue-700">Tu video entrara a analisis automaticamente.</p>
-                        </div>
-                      </div>
-                    )}
-                    {['motion_detecting', 'motion_detected', 'analyzing', 'classifying', 'deep_analyzing', 'generating_report'].includes(
-                      video.estado
-                    ) && (
-                        <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                          <Loader2 className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" />
-                          <div className="text-sm">
-                            <p className="font-medium text-blue-900">Analisis en progreso</p>
-                            <p className="text-blue-700">Este proceso puede tardar 35-45 minutos. Te avisamos en la app al finalizar.</p>
-                          </div>
-                        </div>
-                      )}
-                    {video.estado === 'error' && (
-                      <>
-                        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg flex-1">
-                          <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />
-                          <div className="text-sm">
-                            <p className="font-medium text-red-900">Error en el análisis</p>
-                            <p className="text-red-700">
-                              {video.metadata_tecnico?.error || 'Ocurrió un error durante el procesamiento'}
-                            </p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleReintentar(video.id)}
-                          className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors"
-                        >
-                          <RotateCcw className="w-4 h-4" />
-                          Reintentar Análisis
-                        </button>
-                      </>
-                    )}
-                    <button
-                      onClick={() => handleEliminar(video.id)}
-                      className="ml-auto flex items-center gap-2 px-4 py-2 text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Eliminar
-                    </button>
-                  </div>
-
-                  {/* Metadata adicional */}
-                  {video.fecha_creacion && (
-                    <div className="mt-4 pt-4 border-t border-gray-200 text-xs text-gray-500">
-                      Creado: {formatDate(video.fecha_creacion)}
-                      {video.fecha_procesamiento && (
-                        <> • Procesado: {formatDate(video.fecha_procesamiento)}</>
-                      )}
-                      {video.tiempo_procesamiento_segundos && (
-                        <> • Tiempo: {securityVideoService.formatDuration(video.tiempo_procesamiento_segundos)}</>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        <Button variant="outline" onClick={cargarVideos}>
+          <RefreshCw aria-hidden="true" />
+          {t('common.refresh')}
+        </Button>
       </div>
-    </div>
+
+      {loading && videos.length === 0 ? (
+        <LoadingState label={t('common.loading')} />
+      ) : videos.length === 0 ? (
+        <EmptyState
+          icon={<Video aria-hidden="true" />}
+          title={t('securityVideos.emptyTitle')}
+          description={t('securityVideos.emptyDescription')}
+          action={
+            <Button onClick={() => navigate({ to: '/security/upload' })}>
+              <Plus aria-hidden="true" />
+              {t('securityVideos.upload')}
+            </Button>
+          }
+        />
+      ) : (
+        <PageSection>
+          <div className="grid gap-5">
+            {videos.map((video) => {
+              const riesgo = video.estadisticas?.eventos_por_riesgo;
+              const hasRiskAlert = Boolean(
+                riesgo && (riesgo.CRITICO > 0 || riesgo.ALTO > 0),
+              );
+              const isAnalysisInProgress = [
+                'motion_detecting',
+                'motion_detected',
+                'analyzing',
+                'classifying',
+                'deep_analyzing',
+                'generating_report',
+              ].includes(video.estado);
+
+              return (
+                <Card key={video.id} variant="elevated">
+                  <CardContent className="p-6">
+                    <div className="mb-4 flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="mb-2 truncate text-lg font-semibold text-foreground">
+                          {getVideoLabel(video)}
+                        </h3>
+                        {video.duracion_segundos > 0 && (
+                          <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                            <span className="flex items-center gap-1.5">
+                              <Clock size={15} aria-hidden="true" />
+                              {securityVideoService.formatDuration(video.duracion_segundos)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <StatusBadge status={statusFromEstado(video.estado)} />
+                    </div>
+
+                    {video.estadisticas && Object.keys(video.estadisticas).length > 0 && (
+                      <div className="mb-4 grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/50 p-4 sm:grid-cols-4">
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            {t('securityVideos.totalEvents')}
+                          </p>
+                          <p className="text-lg font-semibold text-foreground">
+                            {video.eventos_count || video.estadisticas.total_eventos || 0}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            {t('securityVideos.critical')}
+                          </p>
+                          <p className="text-lg font-semibold text-error">
+                            {video.estadisticas.eventos_por_riesgo?.CRITICO || 0}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            {t('securityVideos.highRisk')}
+                          </p>
+                          <p className="text-lg font-semibold text-warning">
+                            {video.estadisticas.eventos_por_riesgo?.ALTO || 0}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            {t('securityVideos.mediumLow')}
+                          </p>
+                          <p className="text-lg font-semibold text-foreground">
+                            {(video.estadisticas.eventos_por_riesgo?.MEDIO || 0) +
+                              (video.estadisticas.eventos_por_riesgo?.BAJO || 0)}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {hasRiskAlert && (
+                      <Alert variant="warning" className="mb-4">
+                        <AlertTriangle aria-hidden="true" />
+                        <AlertDescription>{t('securityVideos.riskAlert')}</AlertDescription>
+                      </Alert>
+                    )}
+
+                    <div className="flex flex-wrap gap-3">
+                      {video.estado === 'uploading' && (
+                        <Alert variant="info" className="flex-1">
+                          <AlertTitle>{t('securityVideos.uploadingTitle')}</AlertTitle>
+                          <AlertDescription>{t('securityVideos.uploadingDesc')}</AlertDescription>
+                        </Alert>
+                      )}
+
+                      {video.estado === 'completed' && (
+                        <>
+                          <Button onClick={() => navigate({ to: `/security/${video.id}` })}>
+                            <FileText aria-hidden="true" />
+                            {t('securityVideos.viewReport')}
+                          </Button>
+                          {video.reporte_pdf_url && (
+                            <Button variant="outline" asChild>
+                              <a
+                                href={video.reporte_pdf_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <FileText aria-hidden="true" />
+                                {t('securityVideos.downloadPdf')}
+                              </a>
+                            </Button>
+                          )}
+                        </>
+                      )}
+
+                      {video.estado === 'uploaded' && (
+                        <Alert variant="info">
+                          <AlertTitle>{t('securityVideos.queuedTitle')}</AlertTitle>
+                          <AlertDescription>{t('securityVideos.queuedDesc')}</AlertDescription>
+                        </Alert>
+                      )}
+
+                      {isAnalysisInProgress && (
+                        <Alert variant="info">
+                          <AlertTitle>{t('securityVideos.progressTitle')}</AlertTitle>
+                          <AlertDescription>{t('securityVideos.progressDesc')}</AlertDescription>
+                        </Alert>
+                      )}
+
+                      {video.estado === 'error' && (
+                        <>
+                          <Alert variant="error" className="flex-1">
+                            <AlertTitle>{t('securityVideos.errorTitle')}</AlertTitle>
+                            <AlertDescription>
+                              {video.metadata_tecnico?.error ||
+                                t('securityVideos.errorFallback')}
+                            </AlertDescription>
+                          </Alert>
+                          <Button
+                            variant="secondary"
+                            className="border-warning-border bg-warning-surface text-warning"
+                            onClick={() => handleReintentar(video.id)}
+                          >
+                            <RotateCcw aria-hidden="true" />
+                            {t('securityVideos.retry')}
+                          </Button>
+                        </>
+                      )}
+
+                      <Button
+                        variant="outline"
+                        className="ml-auto text-error hover:bg-error-surface"
+                        onClick={() => setDeleteTarget(video)}
+                      >
+                        <Trash2 aria-hidden="true" />
+                        {t('common.delete')}
+                      </Button>
+                    </div>
+
+                    {video.fecha_creacion && (
+                      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-4 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1.5">
+                          <CalendarDays size={13} aria-hidden="true" />
+                          {t('securityVideos.created')}: {formatDate(video.fecha_creacion)}
+                        </span>
+                        {video.fecha_procesamiento && (
+                          <span className="flex items-center gap-1.5">
+                            <CalendarDays size={13} aria-hidden="true" />
+                            {t('securityVideos.processed')}: {formatDate(video.fecha_procesamiento)}
+                          </span>
+                        )}
+                        {video.tiempo_procesamiento_segundos && (
+                          <span className="flex items-center gap-1.5">
+                            <Timer size={13} aria-hidden="true" />
+                            {t('securityVideos.time')}:{' '}
+                            {securityVideoService.formatDuration(video.tiempo_procesamiento_segundos)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </PageSection>
+      )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={handleEliminar}
+        title={t('securityVideos.deleteTitle')}
+        description={t('securityVideos.deleteDescription')}
+        confirmText={t('common.delete')}
+        loading={deleting}
+      />
+    </PageContainer>
   );
 }

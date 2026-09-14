@@ -4,17 +4,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
-  Ban,
   CheckCircle,
   Clock,
   FileText,
   Filter,
-  Loader2,
   Package,
   Plus,
   RefreshCw,
   RotateCcw,
-  Search,
   Shield,
   Trash2,
   Users,
@@ -25,20 +22,41 @@ import {
 import { toast } from 'sonner';
 import {
   AnalysisComparison,
-  OperationalAnalysis,
   OperationalAnalysisType,
   operationalVideoService,
 } from '../services/operationalVideoService';
+import { getErrorMessage } from '../lib/errors';
+import { PageContainer } from '../components/ui/page-container';
+import { PageHeader } from '../components/ui/page-header';
+import { Button } from '../components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Progress } from '../components/ui/progress';
+import { EmptyState } from '../components/ui/empty-state';
+import { LoadingState } from '../components/ui/loading-state';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import { SearchInput } from '../components/ui/search-input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/ui/select';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { useTranslation } from '../i18n';
 
 type ViewMode = 'cards' | 'table';
 
+const ALL_TYPES = 'all';
+
 const CATEGORY_ICON_MAP: Record<string, ReactNode> = {
-  ACCESS_CONTROL: <Shield className="w-5 h-5 text-tivit-red" />,
-  OCCUPANCY: <Users className="w-5 h-5 text-tivit-red" />,
-  PEOPLE_FLOW: <Activity className="w-5 h-5 text-tivit-red" />,
-  MERCHANDISE_CONTROL: <Package className="w-5 h-5 text-tivit-red" />,
-  PARKING: <Activity className="w-5 h-5 text-tivit-red" />,
-  WORK_SUPERVISION: <CheckCircle className="w-5 h-5 text-tivit-red" />,
+  ACCESS_CONTROL: <Shield className="h-5 w-5 text-primary" aria-hidden="true" />,
+  OCCUPANCY: <Users className="h-5 w-5 text-primary" aria-hidden="true" />,
+  PEOPLE_FLOW: <Activity className="h-5 w-5 text-primary" aria-hidden="true" />,
+  MERCHANDISE_CONTROL: <Package className="h-5 w-5 text-primary" aria-hidden="true" />,
+  PARKING: <Activity className="h-5 w-5 text-primary" aria-hidden="true" />,
+  WORK_SUPERVISION: <CheckCircle className="h-5 w-5 text-primary" aria-hidden="true" />,
 };
 
 const QUICK_START_ORDER = [
@@ -50,22 +68,33 @@ const QUICK_START_ORDER = [
   'WORK_SUPERVISION',
 ];
 
+const statusFromEstado = (estado: string): AppStatus => {
+  if (estado === 'completed') return 'completed';
+  if (estado === 'cancelled') return 'cancelled';
+  if (estado === 'error') return 'failed';
+  return 'processing';
+};
+
 const itemVariants = {
   hidden: { opacity: 0, y: 14 },
   show: { opacity: 1, y: 0 },
 };
 
 export default function OperationalVideos() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [filtroTipo, setFiltroTipo] = useState<string>('');
+  const [filtroTipo, setFiltroTipo] = useState<string>(ALL_TYPES);
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
 
   const [compareA, setCompareA] = useState('');
   const [compareB, setCompareB] = useState('');
   const [comparison, setComparison] = useState<AnalysisComparison | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
 
   const prevStatusRef = useRef<Record<string, string>>({});
   const hasLoadedOnceRef = useRef(false);
@@ -84,7 +113,7 @@ export default function OperationalVideos() {
     queryKey: ['operational-analyses', filtroTipo],
     queryFn: async () => {
       const params: { limit: number; analysis_type?: string } = { limit: 50 };
-      if (filtroTipo) params.analysis_type = filtroTipo;
+      if (filtroTipo && filtroTipo !== ALL_TYPES) params.analysis_type = filtroTipo;
       const response = await operationalVideoService.listarAnalisis(params);
       return response.analyses || [];
     },
@@ -94,33 +123,33 @@ export default function OperationalVideos() {
   const deleteMutation = useMutation({
     mutationFn: async (analysisId: string) => operationalVideoService.eliminarAnalisis(analysisId),
     onSuccess: () => {
-      toast.success('Analisis eliminado');
+      toast.success(t('operational.deleted'));
       queryClient.invalidateQueries({ queryKey: ['operational-analyses'] });
     },
-    onError: (error: any) => {
-      toast.error(error?.message || 'Error eliminando analisis');
+    onError: (error: unknown) => {
+      toast.error(getErrorMessage(error));
     },
   });
 
   const reprocessMutation = useMutation({
     mutationFn: async (analysisId: string) => operationalVideoService.reprocesarAnalisis(analysisId),
     onSuccess: () => {
-      toast.success('Analisis reencolado para reprocesamiento');
+      toast.success(t('operational.reprocessSuccess'));
       queryClient.invalidateQueries({ queryKey: ['operational-analyses'] });
     },
-    onError: (error: any) => {
-      toast.error(error?.message || 'Error al reprocesar');
+    onError: (error: unknown) => {
+      toast.error(getErrorMessage(error));
     },
   });
 
   const cancelMutation = useMutation({
     mutationFn: async (analysisId: string) => operationalVideoService.cancelarAnalisis(analysisId),
     onSuccess: () => {
-      toast.info('Analisis cancelado');
+      toast.info(t('operational.cancelSuccess'));
       queryClient.invalidateQueries({ queryKey: ['operational-analyses'] });
     },
-    onError: (error: any) => {
-      toast.error(error?.message || 'Error cancelando analisis');
+    onError: (error: unknown) => {
+      toast.error(getErrorMessage(error));
     },
   });
 
@@ -129,10 +158,10 @@ export default function OperationalVideos() {
       operationalVideoService.compararAnalisis(a, b),
     onSuccess: (result) => {
       setComparison(result);
-      toast.success('Comparativa generada');
+      toast.success(t('operational.compareSuccess'));
     },
-    onError: (error: any) => {
-      toast.error(error?.message || 'No se pudo generar la comparativa');
+    onError: (error: unknown) => {
+      toast.error(getErrorMessage(error));
     },
   });
 
@@ -182,15 +211,15 @@ export default function OperationalVideos() {
     analyses.forEach((a) => {
       const prev = prevStatusRef.current[a.id];
       if (a.estado === 'completed' && prev && prev !== 'completed') {
-        toast.success(`Analisis completado: ${a.video_filename}`);
+        toast.success(t('operational.completedToast', { name: a.video_filename }));
       }
       if (a.estado === 'cancelled' && prev && prev !== 'cancelled') {
-        toast.info(`Analisis cancelado: ${a.video_filename}`);
+        toast.info(t('operational.cancelledToast', { name: a.video_filename }));
       }
     });
 
     prevStatusRef.current = Object.fromEntries(analyses.map((a) => [a.id, a.estado]));
-  }, [analyses, loading]);
+  }, [analyses, loading, t]);
 
   const getTypeInfo = (type: string): OperationalAnalysisType => {
     return (
@@ -205,29 +234,31 @@ export default function OperationalVideos() {
   };
 
   const getTypeIcon = (type: string): ReactNode => {
-    return CATEGORY_ICON_MAP[type] || <Activity className="w-5 h-5 text-tivit-red" />;
+    return CATEGORY_ICON_MAP[type] || <Activity className="h-5 w-5 text-primary" aria-hidden="true" />;
   };
 
   const handleCompare = async () => {
     if (!compareA || !compareB || compareA === compareB) {
-      toast.error('Selecciona dos analisis distintos para comparar');
+      toast.error(t('operational.compareSelectError'));
       return;
     }
     await compareMutation.mutateAsync({ a: compareA, b: compareB });
-  };
-
-  const handleDelete = async (analysisId: string) => {
-    if (!confirm('Estas seguro de eliminar este analisis? Esta accion no se puede deshacer.')) return;
-    await deleteMutation.mutateAsync(analysisId);
   };
 
   const handleReprocess = async (analysisId: string) => {
     await reprocessMutation.mutateAsync(analysisId);
   };
 
-  const handleCancel = async (analysisId: string) => {
-    if (!confirm('Cancelar este analisis? No se podra reanudar.')) return;
-    await cancelMutation.mutateAsync(analysisId);
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    await deleteMutation.mutateAsync(deleteTarget);
+    setDeleteTarget(null);
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelTarget) return;
+    await cancelMutation.mutateAsync(cancelTarget);
+    setCancelTarget(null);
   };
 
   const formatDate = (isoDate: string) => {
@@ -244,320 +275,304 @@ export default function OperationalVideos() {
   const readyCount = analyses.filter((a) => a.estado === 'completed').length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-stone-100 py-8 px-4">
-      <div className="max-w-7xl mx-auto space-y-8">
-        {/* Hero Section */}
-        <div className="relative bg-white rounded-3xl border border-slate-200/60 shadow-sm p-8 lg:p-10 overflow-hidden">
-          {/* Subtle Glow Background */}
-          <div className="absolute top-0 right-0 w-96 h-96 rounded-full blur-3xl -mr-20 -mt-20 opacity-30 pointer-events-none bg-blue-50" />
-
-          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
-            <div className="flex items-center gap-5 min-w-0">
-              <div className="w-16 h-16 rounded-[20px] bg-red-50 border border-red-100/60 flex items-center justify-center flex-shrink-0 shadow-sm">
-                <Activity className="w-8 h-8 text-red-500" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-4">
-                  <h1 className="text-3xl font-bold text-slate-800 tracking-tight">Analisis Operativo</h1>
-                  {readyCount > 0 && (
-                    <span className="hidden sm:inline-flex items-center px-4 py-1.5 rounded-full text-[13px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100/60 shadow-sm">
-                      Reportes listos: {readyCount}
-                    </span>
-                  )}
-                </div>
-                <p className="text-slate-500 text-[15px] font-medium mt-1">
-                  Analisis contextual de video con IA - define qué quieres saber
-                </p>
-              </div>
-            </div>
-
-            {analyses.length > 0 && (
-              <button
-                onClick={() => navigate({ to: '/operational/upload', search: { analysisType: undefined } })}
-                className="hidden md:flex items-center gap-2 px-6 py-3 bg-white border border-slate-200/60 text-slate-700 rounded-full font-bold hover:bg-slate-50 transition-all shadow-sm flex-shrink-0"
-              >
-                <Plus className="w-5 h-5" />
-                Nuevo Analisis
-              </button>
+    <PageContainer className="pb-16">
+      <PageHeader
+        icon={Activity}
+        title={t('operational.title')}
+        description={t('operational.description')}
+        actions={
+          <>
+            {readyCount > 0 && (
+              <Badge variant="success">{t('operational.readyReports', { count: readyCount })}</Badge>
             )}
+            {analyses.length > 0 && (
+              <Button
+                onClick={() =>
+                  navigate({ to: '/operational/upload', search: { analysisType: undefined } })
+                }
+              >
+                <Plus aria-hidden="true" />
+                {t('operational.newAnalysis')}
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      <Card>
+        <CardContent className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div
+            role="group"
+            aria-label={t('common.filter')}
+            className="inline-flex w-fit gap-1 rounded-lg border border-border bg-muted p-1"
+          >
+            <button
+              type="button"
+              onClick={() => setViewMode('cards')}
+              aria-pressed={viewMode === 'cards'}
+              className={`inline-flex items-center gap-2 rounded-md px-4 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                viewMode === 'cards'
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <LayoutGrid size={16} aria-hidden="true" />
+              {t('operational.viewCards')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              aria-pressed={viewMode === 'table'}
+              className={`inline-flex items-center gap-2 rounded-md px-4 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                viewMode === 'table'
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Table size={16} aria-hidden="true" />
+              {t('operational.viewTable')}
+            </button>
           </div>
-          <div className="flex flex-col lg:flex-row gap-4 lg:items-center lg:justify-between relative z-10 border-t border-slate-100 pt-6">
-            <div className="flex gap-2 bg-slate-50/80 p-1.5 rounded-full border border-slate-200/60 w-fit">
-              <button
-                onClick={() => setViewMode('cards')}
-                className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-[14px] font-bold transition-all duration-300 ${viewMode === 'cards'
-                    ? 'bg-white shadow-sm text-red-600'
-                    : 'text-slate-500 hover:text-slate-800 hover:bg-white/50'
-                  }`}
-                aria-label="Cambiar a vista de tarjetas"
-              >
-                <LayoutGrid className="w-4 h-4" />
-                Cards
-              </button>
-              <button
-                onClick={() => setViewMode('table')}
-                className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-[14px] font-bold transition-all duration-300 ${viewMode === 'table'
-                    ? 'bg-white shadow-sm text-red-600'
-                    : 'text-slate-500 hover:text-slate-800 hover:bg-white/50'
-                  }`}
-                aria-label="Cambiar a vista de tabla"
-              >
-                <Table className="w-4 h-4" />
-                Tabla
-              </button>
+
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div className="lg:min-w-[320px] lg:flex-1">
+              <SearchInput
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onClear={() => setSearchTerm('')}
+                placeholder={t('operational.searchPlaceholder')}
+                aria-label={t('common.search')}
+              />
             </div>
 
-            <div className="flex flex-col lg:flex-row gap-3 lg:items-center">
-              <div className="relative flex-1 lg:min-w-[360px]">
-                <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
-                <input
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Buscar por archivo, camara, contexto..."
-                  className="w-full pl-11 pr-5 py-3.5 bg-slate-50/50 border border-slate-200/60 rounded-full focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-[15px] font-medium text-slate-800 shadow-sm transition-all"
-                  aria-label="Buscar analisis operativos"
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <Filter className="w-4 h-4 text-slate-500 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <select
-                    value={filtroTipo}
-                    onChange={(e) => setFiltroTipo(e.target.value)}
-                    className="pl-10 pr-10 py-3.5 bg-white border border-slate-200/60 rounded-full focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-[14px] font-bold text-slate-700 shadow-sm appearance-none min-w-[160px] cursor-pointer"
-                    aria-label="Filtrar por tipo de analisis"
-                  >
-                    <option value="">Todos los tipos</option>
+            <div className="flex items-center gap-3">
+              <div className="w-full sm:w-56">
+                <Select value={filtroTipo} onValueChange={setFiltroTipo}>
+                  <SelectTrigger aria-label={t('common.filter')}>
+                    <Filter size={15} className="text-muted-foreground" aria-hidden="true" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_TYPES}>{t('operational.filterAll')}</SelectItem>
                     {Object.entries(types).map(([key, info]) => (
-                      <option key={key} value={key}>
+                      <SelectItem key={key} value={key}>
                         {info.name}
-                      </option>
+                      </SelectItem>
                     ))}
-                  </select>
-                </div>
-
-                <button
-                  onClick={() => refetchAnalyses()}
-                  className="flex items-center justify-center p-3.5 bg-white border border-slate-200/60 rounded-full hover:bg-slate-50 text-slate-500 hover:text-slate-800 transition-colors shadow-sm"
-                  aria-label="Actualizar analisis"
-                  title="Actualizar"
-                >
-                  <RefreshCw className="w-5 h-5" />
-                </button>
+                  </SelectContent>
+                </Select>
               </div>
+
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchAnalyses()}
+                aria-label={t('common.refresh')}
+              >
+                <RefreshCw aria-hidden="true" />
+              </Button>
             </div>
           </div>
+        </CardContent>
+      </Card>
 
-          {completedAnalyses.length >= 2 && (
-            <div className="mt-4 border-t border-gray-100 pt-4">
-              <p className="text-sm font-medium text-gray-700 mb-2">Comparar analisis completados</p>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <select
-                  value={compareA}
-                  onChange={(e) => setCompareA(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                >
-                  <option value="">Analisis A</option>
+      {completedAnalyses.length >= 2 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('operational.compareTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+              <Select value={compareA} onValueChange={setCompareA}>
+                <SelectTrigger aria-label={t('operational.compareA')}>
+                  <SelectValue placeholder={t('operational.compareA')} />
+                </SelectTrigger>
+                <SelectContent>
                   {completedAnalyses.map((a) => (
-                    <option key={`a-${a.id}`} value={a.id}>
+                    <SelectItem key={`a-${a.id}`} value={a.id}>
                       {a.video_filename}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                </SelectContent>
+              </Select>
 
-                <select
-                  value={compareB}
-                  onChange={(e) => setCompareB(e.target.value)}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                >
-                  <option value="">Analisis B</option>
+              <Select value={compareB} onValueChange={setCompareB}>
+                <SelectTrigger aria-label={t('operational.compareB')}>
+                  <SelectValue placeholder={t('operational.compareB')} />
+                </SelectTrigger>
+                <SelectContent>
                   {completedAnalyses.map((a) => (
-                    <option key={`b-${a.id}`} value={a.id}>
+                    <SelectItem key={`b-${a.id}`} value={a.id}>
                       {a.video_filename}
-                    </option>
+                    </SelectItem>
                   ))}
-                </select>
+                </SelectContent>
+              </Select>
 
-                <button
-                  onClick={handleCompare}
-                  disabled={compareMutation.isPending}
-                  className="px-4 py-2 bg-tivit-red text-white rounded-lg hover:bg-tivit-red-dark disabled:opacity-50 text-sm"
-                >
-                  {compareMutation.isPending ? 'Comparando...' : 'Comparar'}
-                </button>
-
-                {comparison && (
-                  <button
-                    onClick={() => setComparison(null)}
-                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm"
-                  >
-                    Limpiar
-                  </button>
-                )}
-              </div>
+              <Button onClick={handleCompare} loading={compareMutation.isPending}>
+                {compareMutation.isPending
+                  ? t('operational.comparing')
+                  : t('operational.compare')}
+              </Button>
 
               {comparison && (
-                <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
-                  <p className="text-sm font-semibold text-gray-800 mb-2">Resultado</p>
-                  <p className="text-xs text-gray-600 mb-2">
-                    Eventos A: {comparison.analysis_a.total_events} - Eventos B: {comparison.analysis_b.total_events} - Delta: {comparison.event_count_delta}
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {Object.entries(comparison.deltas)
-                      .slice(0, 8)
-                      .map(([key, val]) => (
-                        <div key={key} className="bg-white rounded p-2 border border-gray-100">
-                          <p className="text-xs text-gray-500 uppercase">{key.replace(/_/g, ' ')}</p>
-                          <p className="text-sm text-gray-800">
-                            A: {val.analysis_a} - B: {val.analysis_b} - Delta: {val.delta} ({val.delta_pct}%)
-                          </p>
-                        </div>
-                      ))}
-                  </div>
-                </div>
+                <Button variant="outline" onClick={() => setComparison(null)}>
+                  {t('operational.clear')}
+                </Button>
               )}
             </div>
-          )}
-        </div>
 
-        {loading && (
-          <div className="grid gap-4">
-            {[0, 1, 2].map((idx) => (
-              <div key={idx} className="bg-white rounded-lg shadow-md p-6 animate-pulse">
-                <div className="h-5 w-52 bg-gray-200 rounded mb-3" />
-                <div className="h-4 w-80 bg-gray-100 rounded mb-5" />
-                <div className="grid grid-cols-3 gap-3 mb-4">
-                  <div className="h-14 bg-gray-100 rounded" />
-                  <div className="h-14 bg-gray-100 rounded" />
-                  <div className="h-14 bg-gray-100 rounded" />
+            {comparison && (
+              <div className="rounded-lg border border-border bg-muted/50 p-4">
+                <p className="mb-2 text-sm font-semibold text-foreground">
+                  {t('operational.result')}
+                </p>
+                <p className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>{t('operational.eventsA', { count: comparison.analysis_a.total_events })}</span>
+                  <span>{t('operational.eventsB', { count: comparison.analysis_b.total_events })}</span>
+                  <span>{t('operational.delta', { count: comparison.event_count_delta })}</span>
+                </p>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {Object.entries(comparison.deltas)
+                    .slice(0, 8)
+                    .map(([key, val]) => (
+                      <div key={key} className="rounded-md border border-border bg-card p-2.5">
+                        <p className="text-xs uppercase text-muted-foreground">
+                          {key.replace(/_/g, ' ')}
+                        </p>
+                        <p className="text-sm text-foreground">
+                          A: {val.analysis_a} - B: {val.analysis_b} - Delta: {val.delta} (
+                          {val.delta_pct}%)
+                        </p>
+                      </div>
+                    ))}
                 </div>
-                <div className="h-9 w-40 bg-gray-200 rounded" />
               </div>
-            ))}
-          </div>
-        )}
-        {!loading && analyses.length === 0 && (
-          <div className="bg-white rounded-[32px] border border-slate-200/60 shadow-sm p-8 md:p-14 mb-8">
-            <div className="border-2 border-dashed border-slate-200 rounded-[24px] bg-slate-50/50 p-12 text-center max-w-3xl mx-auto">
-              <div className="w-20 h-20 rounded-[20px] bg-red-50 border border-red-100 flex items-center justify-center mx-auto mb-6 shadow-sm">
-                <Activity className="w-10 h-10 text-red-500" />
-              </div>
-              <h3 className="text-2xl lg:text-3xl font-bold text-slate-800 mb-3 tracking-tight">No hay análisis operativos</h3>
-              <p className="text-[16px] text-slate-500 mb-8 max-w-2xl mx-auto font-medium leading-relaxed">
-                Sube un video para empezar a medir flujos, accesos y seguridad operacional con IA avanzada de forma automatizada.
-              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-              <div className="flex flex-wrap gap-3 justify-center mb-10">
+      {loading && <LoadingState label={t('common.loading')} />}
+
+      {!loading && analyses.length === 0 && (
+        <EmptyState
+          icon={<Activity aria-hidden="true" />}
+          title={t('operational.emptyTitle')}
+          description={t('operational.emptyDescription')}
+          className="py-16"
+          action={
+            <div className="flex flex-col items-center gap-6">
+              <div className="flex flex-wrap justify-center gap-2">
                 {QUICK_START_ORDER.filter((key) => types[key]).map((key) => (
-                  <button
+                  <Button
                     key={key}
-                    onClick={() => navigate({ to: '/operational/upload', search: { analysisType: key } })}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200/80 shadow-sm rounded-full text-[14px] font-bold text-slate-700 hover:border-red-200 hover:bg-red-50 hover:text-red-700 transition-all"
-                    aria-label={`Crear nuevo analisis tipo ${types[key].name}`}
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      navigate({ to: '/operational/upload', search: { analysisType: key } })
+                    }
+                    aria-label={`${t('operational.newAnalysis')} ${types[key].name}`}
                   >
                     {getTypeIcon(key)}
                     {types[key].name}
-                  </button>
+                  </Button>
                 ))}
               </div>
-
-              <button
-                onClick={() => navigate({ to: '/operational/upload', search: { analysisType: undefined } })}
-                className="inline-flex items-center justify-center gap-2 bg-red-500 hover:bg-red-600 shadow-md text-white px-8 py-4 rounded-full font-bold text-[15px] transition-all"
+              <Button
+                onClick={() =>
+                  navigate({ to: '/operational/upload', search: { analysisType: undefined } })
+                }
               >
-                <Plus className="w-5 h-5 ml-1" />
-                Crear Nuevo Analisis
-              </button>
+                <Plus aria-hidden="true" />
+                {t('operational.createNew')}
+              </Button>
             </div>
-          </div>
-        )}
+          }
+        />
+      )}
 
-        {!loading && visibleAnalyses.length > 0 && visibleAnalyses.length === 0 && (
-          <div className="bg-white rounded-lg shadow-md p-8 text-center">
-            <p className="text-gray-700 font-medium">No hay resultados con esos filtros</p>
-            <p className="text-sm text-gray-500 mt-1">Ajusta la busqueda o limpia el filtro de tipo.</p>
-          </div>
-        )}
+      {!loading && analyses.length > 0 && visibleAnalyses.length === 0 && (
+        <EmptyState
+          icon={<Filter aria-hidden="true" />}
+          title={t('operational.noResultsTitle')}
+          description={t('operational.noResultsDescription')}
+        />
+      )}
 
-        {!loading && visibleAnalyses.length > 0 && viewMode === 'cards' && (
-          <div className="grid gap-6">
-            <AnimatePresence>
-              {visibleAnalyses.map((analysis, index) => {
-                const typeInfo = getTypeInfo(analysis.analysis_type);
-                const isProc = operationalVideoService.isProcessing(analysis.estado);
+      {!loading && visibleAnalyses.length > 0 && viewMode === 'cards' && (
+        <div className="grid gap-5">
+          <AnimatePresence>
+            {visibleAnalyses.map((analysis, index) => {
+              const typeInfo = getTypeInfo(analysis.analysis_type);
+              const isProc = operationalVideoService.isProcessing(analysis.estado);
 
-                return (
-                  <motion.div
-                    key={analysis.id}
-                    variants={itemVariants}
-                    initial="hidden"
-                    animate="show"
-                    exit="hidden"
-                    transition={{ duration: 0.25, delay: Math.min(index * 0.03, 0.2) }}
-                    className="bg-white rounded-[24px] shadow-sm border border-slate-200/60 overflow-hidden hover:shadow-md transition-shadow"
-                  >
-                    <div className="p-7">
-                      <div className="flex items-start justify-between mb-5">
-                        <div className="flex-1 min-w-0 pr-4">
-                          <div className="flex items-center gap-2 mb-2">
+              return (
+                <motion.div
+                  key={analysis.id}
+                  variants={itemVariants}
+                  initial="hidden"
+                  animate="show"
+                  exit="hidden"
+                  transition={{ duration: 0.25, delay: Math.min(index * 0.03, 0.2) }}
+                >
+                  <Card variant="elevated">
+                    <CardContent className="p-6">
+                      <div className="mb-5 flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="mb-2 flex items-center gap-2">
                             {getTypeIcon(analysis.analysis_type)}
-                            <span className="text-[13px] font-bold text-red-600 tracking-wide uppercase">{typeInfo.name}</span>
+                            <span className="text-xs font-bold uppercase tracking-wide text-primary">
+                              {typeInfo.name}
+                            </span>
                           </div>
-                          <h3 className="text-xl lg:text-2xl font-bold text-slate-800 mb-1.5 truncate">
+                          <h3 className="mb-1.5 truncate text-xl font-bold text-foreground">
                             {analysis.video_filename}
                           </h3>
                           {analysis.custom_context && (
-                            <p className="text-[15px] text-slate-500 font-medium italic line-clamp-2 leading-relaxed">
-                              "{analysis.custom_context}"
+                            <p className="line-clamp-2 text-sm italic leading-relaxed text-muted-foreground">
+                              &ldquo;{analysis.custom_context}&rdquo;
                             </p>
                           )}
                         </div>
-                        <span
-                          className={`px-4 py-2 rounded-full text-[12px] font-bold tracking-wide flex items-center gap-2 flex-shrink-0 border shadow-sm ${isProc ? 'bg-amber-50 text-amber-700 border-amber-200/60' :
-                              analysis.estado === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60' :
-                                analysis.estado === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200/60' :
-                                  'bg-slate-50 text-slate-600 border-slate-200/60'
-                            }`}
-                        >
-                          {isProc && <Loader2 className="w-4 h-4 animate-spin" />}
-                          {analysis.estado === 'completed' && <CheckCircle className="w-4 h-4" />}
-                          {operationalVideoService.getEstadoTexto(analysis.estado)}
-                        </span>
+                        <StatusBadge status={statusFromEstado(analysis.estado)} />
                       </div>
 
                       {isProc && analysis.progress > 0 && (
-                        <div className="mb-5 bg-slate-50/50 p-4 rounded-xl border border-slate-100">
-                          <div className="flex justify-between text-[13px] font-bold text-slate-500 mb-1.5 uppercase tracking-wide">
-                            <span>{analysis.current_phase || 'Procesando...'}</span>
-                            <span className="text-slate-700 font-bold">{Math.round(analysis.progress)}%</span>
+                        <div className="mb-5 rounded-lg border border-border bg-muted/50 p-4">
+                          <div className="mb-1.5 flex justify-between text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                            <span>{analysis.current_phase || t('operational.processing')}</span>
+                            <span className="text-foreground">{Math.round(analysis.progress)}%</span>
                           </div>
-                          <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
-                            <div
-                              className="h-full bg-gradient-to-r from-amber-400 to-red-500 rounded-full transition-all duration-500 ease-out"
-                              style={{ width: `${analysis.progress}%` }}
-                            />
-                          </div>
+                          <Progress value={analysis.progress} aria-label={typeInfo.name} />
                         </div>
                       )}
 
                       {analysis.scan_stats && Object.keys(analysis.scan_stats).length > 0 && (
-                        <div className="grid grid-cols-3 gap-3 mb-6 p-5 bg-slate-50 border border-slate-100/80 rounded-[20px]">
+                        <div className="mb-5 grid grid-cols-3 gap-3 rounded-lg border border-border bg-muted/50 p-4">
                           <div>
-                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Segmentos</p>
-                            <p className="text-xl font-bold text-slate-800">
+                            <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                              {t('operational.segments')}
+                            </p>
+                            <p className="text-xl font-bold text-foreground">
                               {analysis.scan_stats.segments_for_analysis || 0}
                             </p>
                           </div>
                           <div>
-                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Eventos detectados</p>
-                            <p className="text-xl font-bold text-red-500 drop-shadow-sm">
-                              {analysis.scan_stats.total_events ?? (analysis.scan_stats.detected_events || 0)}
+                            <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                              {t('operational.detectedEvents')}
+                            </p>
+                            <p className="text-xl font-bold text-primary">
+                              {analysis.scan_stats.total_events ??
+                                analysis.scan_stats.detected_events ??
+                                0}
                             </p>
                           </div>
                           <div>
-                            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1">Duracion</p>
-                            <p className="text-xl font-bold text-slate-800">
+                            <p className="mb-1 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+                              {t('operational.duration')}
+                            </p>
+                            <p className="text-xl font-bold text-foreground">
                               {analysis.video_duration > 0
                                 ? operationalVideoService.formatDuration(analysis.video_duration)
                                 : 'N/A'}
@@ -566,148 +581,188 @@ export default function OperationalVideos() {
                         </div>
                       )}
 
-                      <div className="flex gap-3 flex-wrap mt-2">
+                      <div className="flex flex-wrap gap-3">
                         {analysis.estado === 'completed' && (
-                          <button
+                          <Button
                             onClick={() => navigate({ to: `/operational/${analysis.id}` })}
-                            className="flex items-center gap-2 px-6 py-2.5 bg-red-500 text-white shadow-md rounded-full font-bold text-[14px] hover:bg-red-600 transition-colors"
                           >
-                            <FileText className="w-4 h-4 ml-1" />
-                            Ver Detalle
-                          </button>
+                            <FileText aria-hidden="true" />
+                            {t('operational.viewDetail')}
+                          </Button>
                         )}
 
                         {isProc && operationalVideoService.isCancellable(analysis.estado) && (
-                          <button
-                            onClick={() => handleCancel(analysis.id)}
-                            className="flex items-center gap-2 px-6 py-2.5 text-slate-600 border border-slate-200/80 shadow-sm rounded-full font-bold text-[14px] hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 transition-colors"
-                            title="Cancelar analisis"
+                          <Button
+                            variant="outline"
+                            onClick={() => setCancelTarget(analysis.id)}
                           >
-                            <XCircle className="w-4 h-4" />
-                            Cancelar
-                          </button>
+                            <XCircle aria-hidden="true" />
+                            {t('operational.cancel')}
+                          </Button>
                         )}
 
                         {analysis.estado === 'error' && (
-                          <button
+                          <Button
+                            variant="secondary"
+                            className="border-warning-border bg-warning-surface text-warning"
                             onClick={() => handleReprocess(analysis.id)}
-                            className="flex items-center gap-2 px-6 py-2.5 bg-amber-500 text-white shadow-md rounded-full font-bold text-[14px] hover:bg-amber-600 transition-colors"
                           >
-                            <RotateCcw className="w-4 h-4" />
-                            Reprocesar
-                          </button>
+                            <RotateCcw aria-hidden="true" />
+                            {t('operational.reprocess')}
+                          </Button>
                         )}
 
-                        <button
-                          onClick={() => handleDelete(analysis.id)}
-                          className="ml-auto flex items-center gap-2 px-5 py-2.5 text-red-500 border border-red-100 shadow-sm rounded-full font-bold text-[14px] hover:bg-red-50 focus:ring-2 focus:ring-red-100 transition-colors"
+                        <Button
+                          variant="ghost"
+                          className="ml-auto text-error hover:bg-error-surface"
+                          onClick={() => setDeleteTarget(analysis.id)}
                         >
-                          <Trash2 className="w-4 h-4" />
-                          Eliminar
-                        </button>
+                          <Trash2 aria-hidden="true" />
+                          {t('operational.delete')}
+                        </Button>
                       </div>
 
                       {analysis.created_at && (
-                        <div className="mt-5 pt-4 border-t border-slate-100/60 flex items-center gap-2 text-[12px] font-bold text-slate-400">
-                          <Clock className="w-3.5 h-3.5" />
+                        <div className="mt-5 flex items-center gap-2 border-t border-border pt-4 text-xs font-medium text-muted-foreground">
+                          <Clock size={13} aria-hidden="true" />
                           <span>
-                            Creado: {formatDate(analysis.created_at)}
-                            {analysis.completed_at && <> &bull; Completado: {formatDate(analysis.completed_at)}</>}
+                            {t('operational.created')}: {formatDate(analysis.created_at)}
+                            {analysis.completed_at && (
+                              <>
+                                {' '}
+                                &bull; {t('operational.completedAt')}:{' '}
+                                {formatDate(analysis.completed_at)}
+                              </>
+                            )}
                             {analysis.tiempo_procesamiento_segundos > 0 && (
-                              <span className="hidden sm:inline"> &bull; Tiempo: {operationalVideoService.formatDuration(analysis.tiempo_procesamiento_segundos)}</span>
+                              <span className="hidden sm:inline">
+                                {' '}
+                                &bull; {t('operational.time')}:{' '}
+                                {operationalVideoService.formatDuration(
+                                  analysis.tiempo_procesamiento_segundos,
+                                )}
+                              </span>
                             )}
                           </span>
                         </div>
                       )}
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </AnimatePresence>
-          </div>
-        )}
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
+        </div>
+      )}
 
-        {!loading && visibleAnalyses.length > 0 && viewMode === 'table' && (
-          <div className="bg-white rounded-lg shadow-md overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left px-4 py-3 font-semibold">Tipo</th>
-                    <th className="text-left px-4 py-3 font-semibold">Archivo</th>
-                    <th className="text-left px-4 py-3 font-semibold">Estado</th>
-                    <th className="text-left px-4 py-3 font-semibold">Creado</th>
-                    <th className="text-right px-4 py-3 font-semibold">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleAnalyses.map((analysis) => {
-                    const typeInfo = getTypeInfo(analysis.analysis_type);
-                    const isProc = operationalVideoService.isProcessing(analysis.estado);
+      {!loading && visibleAnalyses.length > 0 && viewMode === 'table' && (
+        <Card variant="elevated" className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 text-left font-semibold">{t('operational.headerType')}</th>
+                  <th className="px-4 py-3 text-left font-semibold">{t('operational.headerFile')}</th>
+                  <th className="px-4 py-3 text-left font-semibold">{t('operational.headerStatus')}</th>
+                  <th className="px-4 py-3 text-left font-semibold">
+                    {t('operational.headerCreated')}
+                  </th>
+                  <th className="px-4 py-3 text-right font-semibold">
+                    {t('operational.headerActions')}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleAnalyses.map((analysis) => {
+                  const typeInfo = getTypeInfo(analysis.analysis_type);
+                  const isProc = operationalVideoService.isProcessing(analysis.estado);
 
-                    return (
-                      <tr key={analysis.id} className="border-t border-gray-100 hover:bg-gray-50/70">
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center gap-2 text-tivit-red font-medium">
-                            {getTypeIcon(analysis.analysis_type)}
-                            {typeInfo.name}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-gray-800 max-w-[340px] truncate">{analysis.video_filename}</td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs font-medium ${operationalVideoService.getEstadoColor(
-                              analysis.estado,
-                            )}`}
-                          >
-                            {isProc && <Loader2 className="w-3 h-3 animate-spin" />}
-                            {operationalVideoService.getEstadoTexto(analysis.estado)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-gray-600">{formatDate(analysis.created_at)}</td>
-                        <td className="px-4 py-3">
-                          <div className="flex justify-end gap-2">
-                            {analysis.estado === 'completed' && (
-                              <button
-                                onClick={() => navigate({ to: `/operational/${analysis.id}` })}
-                                className="px-3 py-1.5 rounded border border-tivit-red text-tivit-red hover:bg-red-50"
-                              >
-                                Detalle
-                              </button>
-                            )}
-                            {analysis.estado === 'error' && (
-                              <button
-                                onClick={() => handleReprocess(analysis.id)}
-                                className="px-3 py-1.5 rounded bg-orange-500 text-white hover:bg-orange-600"
-                              >
-                                Reprocesar
-                              </button>
-                            )}
-                            {isProc && operationalVideoService.isCancellable(analysis.estado) && (
-                              <button
-                                onClick={() => handleCancel(analysis.id)}
-                                className="px-3 py-1.5 rounded border border-gray-300 text-gray-700 hover:bg-red-50 hover:text-red-700"
-                              >
-                                Cancelar
-                              </button>
-                            )}
-                            <button
-                              onClick={() => handleDelete(analysis.id)}
-                              className="px-3 py-1.5 rounded border border-red-300 text-red-600 hover:bg-red-50"
+                  return (
+                    <tr key={analysis.id} className="border-t border-border hover:bg-muted/40">
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center gap-2 font-medium text-primary">
+                          {getTypeIcon(analysis.analysis_type)}
+                          {typeInfo.name}
+                        </span>
+                      </td>
+                      <td className="max-w-[340px] truncate px-4 py-3 text-foreground">
+                        {analysis.video_filename}
+                      </td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={statusFromEstado(analysis.estado)} />
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {formatDate(analysis.created_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          {analysis.estado === 'completed' && (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => navigate({ to: `/operational/${analysis.id}` })}
                             >
-                              Eliminar
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                              {t('operational.detail')}
+                            </Button>
+                          )}
+                          {analysis.estado === 'error' && (
+                            <Button
+                              variant="secondary"
+                              size="xs"
+                              className="border-warning-border bg-warning-surface text-warning"
+                              onClick={() => handleReprocess(analysis.id)}
+                            >
+                              {t('operational.reprocess')}
+                            </Button>
+                          )}
+                          {isProc && operationalVideoService.isCancellable(analysis.estado) && (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => setCancelTarget(analysis.id)}
+                            >
+                              {t('operational.cancel')}
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="text-error hover:bg-error-surface"
+                            onClick={() => setDeleteTarget(analysis.id)}
+                          >
+                            {t('operational.delete')}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
-    </div>
+        </Card>
+      )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        title={t('operational.deleteTitle')}
+        description={t('operational.deleteDescription')}
+        confirmText={t('common.delete')}
+        loading={deleteMutation.isPending}
+      />
+
+      <ConfirmDialog
+        open={cancelTarget !== null}
+        onOpenChange={(open) => !open && setCancelTarget(null)}
+        onConfirm={confirmCancel}
+        title={t('operational.cancelTitle')}
+        description={t('operational.cancelDescription')}
+        confirmText={t('operational.cancel')}
+        variant="warning"
+        loading={cancelMutation.isPending}
+      />
+    </PageContainer>
   );
 }

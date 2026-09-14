@@ -7,19 +7,15 @@ import {
   AudioQueryResult,
 } from '../services/audioAnalysisService';
 import { toast } from 'sonner';
-import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft,
   Headphones,
-  Loader2,
-  CheckCircle,
   Clock,
   FileText,
   MessageSquare,
   RotateCcw,
   AlertCircle,
   Sparkles,
-  Play,
   BarChart3,
   HardDrive,
   Zap,
@@ -28,6 +24,17 @@ import {
 import { ChatTab } from '../components/audio-detail/ChatTab';
 import { TranscriptionTab } from '../components/audio-detail/TranscriptionTab';
 import { SummaryTab } from '../components/audio-detail/SummaryTab';
+import { PageContainer } from '../components/ui/page-container';
+import { Button } from '../components/ui/button';
+import { Card } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
+import { Progress } from '../components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { LoadingState } from '../components/ui/loading-state';
+import { ErrorState } from '../components/ui/error-state';
+import { StatusBadge, type AppStatus } from '../components/ui/status-badge';
+import { useTranslation } from '../i18n';
 
 interface ChatMessage {
   id: string;
@@ -37,9 +44,17 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+const statusFromEstado = (estado: string): AppStatus => {
+  if (estado === 'completed') return 'completed';
+  if (estado === 'error') return 'failed';
+  if (estado === 'cancelled') return 'cancelled';
+  return 'processing';
+};
+
 export default function AudioAnalysisDetail() {
   const { analysisId } = useParams({ strict: false });
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const [analysis, setAnalysis] = useState<AudioAnalysis | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +74,9 @@ export default function AudioAnalysisDetail() {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<(AudioSegment & { timestamp_formatted: string })[]>([]);
+  const [searchResults, setSearchResults] = useState<
+    (AudioSegment & { timestamp_formatted: string })[]
+  >([]);
   const [searching, setSearching] = useState(false);
 
   // Polling for processing status
@@ -69,6 +86,7 @@ export default function AudioAnalysisDetail() {
 
   useEffect(() => {
     if (analysisId) loadAnalysis();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisId]);
 
   useEffect(() => {
@@ -102,7 +120,7 @@ export default function AudioAnalysisDetail() {
             source.close();
             setStreamConnected(false);
             if (payload.status === 'completed') {
-              toast.success('Transcripción completada. ¡Ya puedes hacer consultas!');
+              toast.success(t('audioDetail.completedToast'));
             }
           }
         } catch {
@@ -123,6 +141,7 @@ export default function AudioAnalysisDetail() {
     }
 
     return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysis?.estado, analysisId]);
 
   useEffect(() => {
@@ -134,7 +153,7 @@ export default function AudioAnalysisDetail() {
           if (!audioAnalysisService.isProcessing(res.analysis.estado)) {
             setPolling(false);
             if (res.analysis.estado === 'completed') {
-              toast.success('Transcripción completada. ¡Ya puedes hacer consultas!');
+              toast.success(t('audioDetail.completedToast'));
             }
           }
         } catch {
@@ -146,6 +165,7 @@ export default function AudioAnalysisDetail() {
       setPolling(false);
     }
     return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [polling, analysis?.estado, analysisId]);
 
   const loadAnalysis = async () => {
@@ -153,8 +173,8 @@ export default function AudioAnalysisDetail() {
       setLoading(true);
       const res = await audioAnalysisService.obtenerAnalisis(analysisId!);
       setAnalysis(res.analysis);
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Error cargando análisis');
+    } catch (error) {
+      toast.error(getErrorText(error, t('audioDetail.loadError')));
     } finally {
       setLoading(false);
     }
@@ -163,19 +183,19 @@ export default function AudioAnalysisDetail() {
   const loadSegments = async (reset = false) => {
     try {
       setLoadingSegments(true);
-      const cursor = reset ? undefined : (segmentsCursor || undefined);
+      const cursor = reset ? undefined : segmentsCursor || undefined;
       const res = await audioAnalysisService.obtenerSegmentos(analysisId!, 1, 50, cursor);
 
       if (reset) {
         setSegments(res.segments);
       } else {
-        setSegments(prev => [...prev, ...res.segments]);
+        setSegments((prev) => [...prev, ...res.segments]);
       }
 
       setTotalSegments(res.total);
       setSegmentsCursor(res.next_cursor || null);
-    } catch (error: any) {
-      toast.error('Error cargando segmentos');
+    } catch {
+      toast.error(t('audioDetail.segmentsError'));
     } finally {
       setLoadingSegments(false);
     }
@@ -193,7 +213,7 @@ export default function AudioAnalysisDetail() {
       question,
       timestamp: new Date(),
     };
-    setChatMessages(prev => [...prev, userMsg]);
+    setChatMessages((prev) => [...prev, userMsg]);
     setQuerying(true);
 
     try {
@@ -205,24 +225,24 @@ export default function AudioAnalysisDetail() {
         result,
         timestamp: new Date(),
       };
-      setChatMessages(prev => [...prev, assistantMsg]);
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Error procesando consulta');
+      setChatMessages((prev) => [...prev, assistantMsg]);
+    } catch (error) {
+      toast.error(getErrorText(error, t('audioDetail.queryError')));
       const errorMsg: ChatMessage = {
         id: `error-${Date.now()}`,
         type: 'assistant',
         result: {
           success: false,
-          respuesta: 'Error al procesar la consulta. Inténtalo de nuevo.',
+          respuesta: t('audioDetail.queryErrorMessage'),
           momentos_relevantes: [],
           encontrado: false,
           confianza: 'baja',
           segments_found: 0,
-          error: error.response?.data?.error || error.message,
+          error: getErrorText(error, ''),
         },
         timestamp: new Date(),
       };
-      setChatMessages(prev => [...prev, errorMsg]);
+      setChatMessages((prev) => [...prev, errorMsg]);
     } finally {
       setQuerying(false);
     }
@@ -235,10 +255,10 @@ export default function AudioAnalysisDetail() {
       const res = await audioAnalysisService.buscarEnTranscripcion(analysisId!, searchQuery);
       setSearchResults(res.results);
       if (res.total === 0) {
-        toast.info('No se encontraron coincidencias');
+        toast.info(t('audioDetail.searchNoResults'));
       }
-    } catch (error: any) {
-      toast.error('Error en la búsqueda');
+    } catch {
+      toast.error(t('audioDetail.searchError'));
     } finally {
       setSearching(false);
     }
@@ -253,7 +273,7 @@ export default function AudioAnalysisDetail() {
   const handleSeekTo = (seconds: number) => {
     const playableUrl = getPlayableAudioUrl();
     if (!playableUrl || !audioRef.current) {
-      toast.info('Reproducción inline no disponible para este archivo.');
+      toast.info(t('audioDetail.playbackUnavailable'));
       return;
     }
 
@@ -261,384 +281,298 @@ export default function AudioAnalysisDetail() {
       audioRef.current.currentTime = Math.max(0, seconds);
       void audioRef.current.play();
     } catch {
-      toast.warning('No se pudo iniciar la reproducción en este momento.');
+      toast.warning(t('audioDetail.playbackFailed'));
     }
   };
 
   const copyTranscription = () => {
     if (analysis?.full_transcription) {
       navigator.clipboard.writeText(analysis.full_transcription);
-      toast.success('Transcripción copiada al portapapeles');
+      toast.success(t('audioDetail.copySuccess'));
+    }
+  };
+
+  const handleReprocess = async () => {
+    try {
+      await audioAnalysisService.reprocesarAnalisis(analysisId!);
+      toast.success(t('audioDetail.reprocessStarted'));
+      loadAnalysis();
+    } catch {
+      toast.error(t('audioDetail.reprocessFailed'));
     }
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-stone-100 flex items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="text-center"
-        >
-          <div className="relative inline-block mb-5">
-            <div className="w-16 h-16 rounded-full border-4 border-gray-100 border-t-tivit-red animate-spin" />
-            <Headphones className="w-6 h-6 text-tivit-red absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
-          </div>
-          <p className="text-gray-500 font-medium">Cargando análisis...</p>
-        </motion.div>
-      </div>
-    );
+    return <LoadingState label={t('audioDetail.loading')} className="min-h-[60vh]" />;
   }
 
   if (!analysis) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-stone-100 flex items-center justify-center">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="text-center bg-white rounded-2xl p-10 shadow-sm border border-gray-100"
-        >
-          <AlertCircle className="w-14 h-14 text-red-400 mx-auto mb-4" />
-          <p className="text-gray-700 font-semibold text-lg mb-1">Análisis no encontrado</p>
-          <p className="text-gray-500 text-sm mb-5">El análisis que buscas no existe o fue eliminado.</p>
-          <button
-            onClick={() => navigate({ to: '/audio' })}
-            className="px-5 py-2.5 bg-gradient-to-r from-tivit-red to-rose-600 text-white rounded-xl font-medium shadow-sm"
-          >
-            Volver
-          </button>
-        </motion.div>
+      <div className="mx-auto max-w-3xl p-6">
+        <ErrorState
+          title={t('audioDetail.notFoundTitle')}
+          description={t('audioDetail.notFoundDescription')}
+          onRetry={loadAnalysis}
+        />
+        <div className="mt-4">
+          <Button variant="outline" onClick={() => navigate({ to: '/audio' })}>
+            {t('common.back')}
+          </Button>
+        </div>
       </div>
     );
   }
 
   const isCompleted = analysis.estado === 'completed';
   const isProcessing = audioAnalysisService.isProcessing(analysis.estado);
-
-  const tabs = [
-    { key: 'query' as const, label: 'Consultas', icon: MessageSquare },
-    { key: 'transcription' as const, label: 'Transcripción', icon: FileText },
-    { key: 'summary' as const, label: 'Resumen IA', icon: Sparkles },
-  ];
+  const playableUrl = getPlayableAudioUrl();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-stone-100">
-      {/* Decorative top bar */}
-      <div className="h-1 bg-gradient-to-r from-tivit-red via-red-400 to-rose-500" />
+    <PageContainer className="max-w-6xl pb-32">
+      <Button
+        variant="ghost"
+        onClick={() => navigate({ to: '/audio' })}
+        className="px-0 hover:bg-transparent"
+      >
+        <ArrowLeft aria-hidden="true" />
+        {t('audioDetail.back')}
+      </Button>
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Back navigation */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3 }}
-          className="mb-8"
-        >
-          <button
-            onClick={() => navigate({ to: '/audio' })}
-            className="flex items-center gap-2 text-slate-500 hover:text-slate-800 transition-colors group"
-          >
-            <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
-            <span className="text-[15px] font-semibold">Volver a Análisis de Audio</span>
-          </button>
-        </motion.div>
-
-        {/* Info Card */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="relative bg-white rounded-3xl border border-slate-100 shadow-sm p-8 lg:p-10 mb-8 overflow-hidden"
-        >
-          {/* Soft Glow Background */}
-          <div className="absolute top-0 right-0 w-96 h-96 rounded-full blur-3xl -mr-20 -mt-20 opacity-30 pointer-events-none bg-blue-50" />
-          
-          <div className="relative z-10 flex flex-col md:flex-row md:items-start justify-between gap-6">
-            <div className="flex items-start gap-5">
-              <div className="relative flex-shrink-0">
-                <div className={`w-16 h-16 rounded-[20px] flex items-center justify-center shadow-sm ${
+      {/* Info Card */}
+      <Card variant="elevated" className="p-8 lg:p-10">
+        <div className="flex flex-col justify-between gap-6 md:flex-row md:items-start">
+          <div className="flex items-start gap-5">
+            <div className="relative shrink-0">
+              <div
+                className={`flex h-16 w-16 items-center justify-center rounded-2xl border ${
                   isCompleted
-                    ? 'bg-emerald-50 border border-emerald-100 text-emerald-600'
+                    ? 'border-success-border bg-success-surface text-success'
                     : isProcessing
-                    ? 'bg-amber-50 border border-amber-100 text-amber-600'
-                    : 'bg-rose-50 border border-rose-100 text-rose-600'
-                }`}>
-                  <Headphones className="w-8 h-8" strokeWidth={2} />
-                </div>
-                {isProcessing && (
-                  <span className="absolute -bottom-1 -right-1 w-5 h-5 bg-amber-400 rounded-full border-2 border-white flex items-center justify-center">
-                    <Loader2 className="w-3 h-3 text-white animate-spin" />
-                  </span>
-                )}
-              </div>
-              <div>
-                <h1 className="text-2xl lg:text-3xl font-bold text-slate-800 tracking-tight">
-                  {analysis.titulo || analysis.video_filename}
-                </h1>
-                {analysis.descripcion && (
-                  <p className="text-slate-500 text-[15px] mt-1.5">{analysis.descripcion}</p>
-                )}
-                <div className="flex flex-wrap items-center gap-3 mt-4">
-                  {analysis.video_duration > 0 && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-100 bg-slate-50 text-slate-600 text-[12px] font-bold">
-                      <Clock className="w-3.5 h-3.5" />
-                      {audioAnalysisService.formatDuration(analysis.video_duration)}
-                    </span>
-                  )}
-                  {analysis.video_size_mb > 0 && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-100 bg-slate-50 text-slate-600 text-[12px] font-bold">
-                      <HardDrive className="w-3.5 h-3.5" />
-                      {analysis.video_size_mb.toFixed(1)} MB
-                    </span>
-                  )}
-                  {analysis.total_segments > 0 && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-100 bg-slate-50 text-slate-600 text-[12px] font-bold">
-                      <BarChart3 className="w-3.5 h-3.5" />
-                      {analysis.total_segments} segmentos
-                    </span>
-                  )}
-                  {analysis.average_confidence > 0 && (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-emerald-100/60 bg-emerald-50 text-emerald-700 text-[12px] font-bold">
-                      <Zap className="w-3.5 h-3.5" />
-                      {(analysis.average_confidence * 100).toFixed(0)}% confianza
-                    </span>
-                  )}
-                </div>
+                      ? 'border-warning-border bg-warning-surface text-warning'
+                      : 'border-error-border bg-error-surface text-error'
+                }`}
+              >
+                <Headphones className="h-8 w-8" aria-hidden="true" />
               </div>
             </div>
-            <div className="flex items-center gap-3 mt-4 md:mt-0 flex-shrink-0">
-              {isCompleted && (
-                <button
-                  onClick={async () => {
-                    try {
-                      await audioAnalysisService.reprocesarAnalisis(analysisId!);
-                      toast.success('Reprocesamiento iniciado con nuevo pipeline STT V2');
-                      loadAnalysis();
-                    } catch (e) {
-                      toast.error('Error al reprocesar');
-                    }
-                  }}
-                  className="px-5 py-2.5 bg-white border border-slate-200/60 text-slate-600 rounded-full text-[13px] font-semibold flex items-center gap-2 hover:bg-slate-50 shadow-sm transition-colors"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Reprocesar
-                </button>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground lg:text-3xl">
+                {analysis.titulo || analysis.video_filename}
+              </h1>
+              {analysis.descripcion && (
+                <p className="mt-1.5 text-[15px] text-muted-foreground">{analysis.descripcion}</p>
               )}
-              <span className={`px-5 py-2.5 rounded-full text-[12px] font-bold uppercase tracking-wide flex items-center gap-2 border shadow-sm ${
-                isCompleted ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60' :
-                isProcessing ? 'bg-amber-50 text-amber-700 border-amber-200/60' :
-                analysis.estado === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200/60' :
-                'bg-slate-50 text-slate-600 border-slate-200/60'
-              }`}>
-                {isProcessing && <Loader2 className="w-4 h-4 animate-spin" />}
-                {isCompleted && <CheckCircle className="w-4 h-4" />}
-                {audioAnalysisService.getEstadoLabel(analysis.estado)}
-              </span>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {analysis.video_duration > 0 && (
+                  <Badge variant="muted" className="gap-1.5 px-3 py-1.5">
+                    <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                    {audioAnalysisService.formatDuration(analysis.video_duration)}
+                  </Badge>
+                )}
+                {analysis.video_size_mb > 0 && (
+                  <Badge variant="muted" className="gap-1.5 px-3 py-1.5">
+                    <HardDrive className="h-3.5 w-3.5" aria-hidden="true" />
+                    {analysis.video_size_mb.toFixed(1)} MB
+                  </Badge>
+                )}
+                {analysis.total_segments > 0 && (
+                  <Badge variant="muted" className="gap-1.5 px-3 py-1.5">
+                    <BarChart3 className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t('audioDetail.segments', { count: analysis.total_segments })}
+                  </Badge>
+                )}
+                {analysis.average_confidence > 0 && (
+                  <Badge variant="success" className="gap-1.5 px-3 py-1.5">
+                    <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t('audioDetail.confidence', {
+                      percent: (analysis.average_confidence * 100).toFixed(0),
+                    })}
+                  </Badge>
+                )}
+              </div>
             </div>
           </div>
-
-          {/* Progress bar */}
-          {isProcessing && analysis.progress > 0 && (
-            <div className="mt-5">
-              <div className="flex justify-between text-xs text-gray-500 mb-1.5">
-                <span className="font-medium">{analysis.current_phase || 'Procesando...'}</span>
-                <span className="font-semibold text-gray-700">{Math.round(analysis.progress)}%</span>
-              </div>
-              <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-amber-400 to-tivit-red rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${analysis.progress}%` }}
-                  transition={{ duration: 0.5, ease: 'easeOut' }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Error */}
-          {analysis.estado === 'error' && (
-            <div className="mt-5 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center justify-between">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                <div className="text-sm">
-                  <p className="font-semibold text-red-800">Error en el procesamiento</p>
-                  <p className="text-red-600 mt-0.5">{analysis.error_message}</p>
-                </div>
-              </div>
-              <button
-                onClick={async () => {
-                  try {
-                    await audioAnalysisService.reprocesarAnalisis(analysisId!);
-                    toast.success('Reprocesamiento iniciado');
-                    loadAnalysis();
-                  } catch (e) {
-                    toast.error('Error al reprocesar');
-                  }
-                }}
-                className="px-4 py-2 bg-orange-500 text-white rounded-xl text-sm font-medium flex items-center gap-1.5 hover:bg-orange-600 transition-colors"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Reprocesar
-              </button>
-            </div>
-          )}
-        </motion.div>
-
-        {/* Tabs (only when completed) */}
-        {isCompleted && (
-          <>
-            {/* Tab selector */}
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="flex gap-2 mb-8 bg-slate-100/60 p-1.5 rounded-full shadow-inner border border-slate-200/60"
-            >
-              {tabs.map((tab) => {
-                const Icon = tab.icon;
-                const isActive = activeTab === tab.key;
-                return (
-                  <button
-                    key={tab.key}
-                    onClick={() => {
-                      setActiveTab(tab.key);
-                      if (tab.key === 'transcription' && segments.length === 0) loadSegments(true);
-                    }}
-                    className={`relative flex-1 flex items-center justify-center gap-2 py-3 rounded-full font-semibold text-[15px] transition-all duration-300 ${
-                      isActive
-                        ? 'text-white'
-                        : 'text-slate-500 hover:text-slate-800 hover:bg-white border hover:border-slate-200/60 shadow-sm border-transparent'
-                    }`}
-                  >
-                    {isActive && (
-                      <motion.div
-                        layoutId="activeTab"
-                        className="absolute inset-0 bg-slate-800 rounded-full shadow-md"
-                        transition={{ type: 'spring', bounce: 0.2, duration: 0.5 }}
-                      />
-                    )}
-                    <span className="relative flex items-center gap-2">
-                      <Icon className="w-4 h-4" />
-                      {tab.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </motion.div>
-
-            {/* Tab content */}
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
-              >
-                {activeTab === 'query' && (
-                  <ChatTab
-                    chatMessages={chatMessages}
-                    querying={querying}
-                    queryInput={queryInput}
-                    setQueryInput={setQueryInput}
-                    onQuery={handleQuery}
-                  />
-                )}
-
-                {activeTab === 'transcription' && (
-                  <TranscriptionTab
-                    analysis={analysis}
-                    segments={segments}
-                    totalSegments={totalSegments}
-                    segmentsCursor={segmentsCursor}
-                    loadingSegments={loadingSegments}
-                    onLoadSegments={loadSegments}
-                    searchQuery={searchQuery}
-                    setSearchQuery={setSearchQuery}
-                    searching={searching}
-                    onSearch={handleSearch}
-                    searchResults={searchResults}
-                    clearSearch={() => {
-                      setSearchResults([]);
-                      setSearchQuery('');
-                    }}
-                    onCopyTranscription={copyTranscription}
-                    onSeekTo={handleSeekTo}
-                  />
-                )}
-
-                {activeTab === 'summary' && (
-                  <SummaryTab analysis={analysis} />
-                )}
-              </motion.div>
-            </AnimatePresence>
-          </>
-        )}
-
-        {/* Audio player bottom bar */}
-        {isCompleted && getPlayableAudioUrl() && (
-          <motion.div
-            initial={{ y: 100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 0.5, type: 'spring', bounce: 0.2 }}
-            className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(900px,calc(100%-2rem))]"
-          >
-            <div className="bg-white/95 backdrop-blur-xl border border-gray-200 rounded-2xl shadow-xl p-4">
-              <div className="flex items-center gap-2 text-xs text-gray-500 mb-2.5 font-medium">
-                <Radio className="w-3.5 h-3.5 text-tivit-red" />
-                Reproductor del análisis
-              </div>
-              <audio ref={audioRef} controls preload="none" className="w-full" src={getPlayableAudioUrl() || undefined} />
-            </div>
-          </motion.div>
-        )}
-
-        {/* Processing state */}
-        {isProcessing && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-10 text-center"
-          >
-            <div className="relative inline-block mb-5">
-              <div className="w-20 h-20 rounded-full border-4 border-gray-100 border-t-tivit-red animate-spin" />
-              <Headphones className="w-8 h-8 text-tivit-red absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
-            </div>
-            <h3 className="text-xl font-bold text-gray-800 mb-2">
-              Procesando audio...
-            </h3>
-            <p className="text-gray-500 mb-5 max-w-md mx-auto">
-              {analysis.current_phase || 'Extrayendo y transcribiendo el audio del video'}
-            </p>
-            {analysis.progress > 0 && (
-              <div className="max-w-md mx-auto">
-                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-                  <motion.div
-                    className="h-full bg-gradient-to-r from-amber-400 to-tivit-red rounded-full"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${analysis.progress}%` }}
-                    transition={{ duration: 0.5, ease: 'easeOut' }}
-                  />
-                </div>
-                <p className="text-sm text-gray-500 mt-2 font-medium">{Math.round(analysis.progress)}% completado</p>
-              </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-3">
+            {isCompleted && (
+              <Button variant="outline" onClick={handleReprocess}>
+                <RotateCcw aria-hidden="true" />
+                {t('audioDetail.reprocess')}
+              </Button>
             )}
-            <p className="text-xs text-gray-400 mt-6 flex items-center justify-center gap-1.5">
-              {streamConnected ? (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  Estado en tiempo real conectado
-                </>
-              ) : (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-gray-300" />
-                  Actualización automática activa
-                </>
-              )}
-            </p>
-          </motion.div>
+            <StatusBadge
+              status={statusFromEstado(analysis.estado)}
+              label={audioAnalysisService.getEstadoLabel(analysis.estado)}
+            />
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        {isProcessing && analysis.progress > 0 && (
+          <div className="mt-5">
+            <div className="mb-1.5 flex justify-between text-xs text-muted-foreground">
+              <span className="font-medium">
+                {analysis.current_phase || t('audioDetail.processing')}
+              </span>
+              <span className="font-semibold text-foreground">
+                {Math.round(analysis.progress)}%
+              </span>
+            </div>
+            <Progress
+              value={analysis.progress}
+              aria-label={t('audioDetail.processing')}
+              aria-valuetext={`${Math.round(analysis.progress)}%`}
+            />
+          </div>
         )}
-      </div>
-    </div>
+
+        {/* Error */}
+        {analysis.estado === 'error' && (
+          <Alert variant="error" className="mt-5 items-center">
+            <AlertCircle aria-hidden="true" />
+            <div className="flex-1">
+              <AlertTitle>{t('audioDetail.errorTitle')}</AlertTitle>
+              <AlertDescription>{analysis.error_message}</AlertDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReprocess}
+              className="text-error hover:bg-error-surface"
+            >
+              <RotateCcw aria-hidden="true" />
+              {t('audioDetail.reprocess')}
+            </Button>
+          </Alert>
+        )}
+      </Card>
+
+      {/* Tabs (only when completed) */}
+      {isCompleted && (
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            const next = value as typeof activeTab;
+            setActiveTab(next);
+            if (next === 'transcription' && segments.length === 0) loadSegments(true);
+          }}
+          className="space-y-6"
+        >
+          <TabsList className="grid h-auto w-full grid-cols-3 rounded-lg p-1.5">
+            <TabsTrigger value="query" className="gap-2 py-2.5">
+              <MessageSquare aria-hidden="true" />
+              {t('audioDetail.tabQueries')}
+            </TabsTrigger>
+            <TabsTrigger value="transcription" className="gap-2 py-2.5">
+              <FileText aria-hidden="true" />
+              {t('audioDetail.tabTranscription')}
+            </TabsTrigger>
+            <TabsTrigger value="summary" className="gap-2 py-2.5">
+              <Sparkles aria-hidden="true" />
+              {t('audioDetail.tabSummary')}
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="query" className="mt-0">
+            <ChatTab
+              chatMessages={chatMessages}
+              querying={querying}
+              queryInput={queryInput}
+              setQueryInput={setQueryInput}
+              onQuery={handleQuery}
+            />
+          </TabsContent>
+
+          <TabsContent value="transcription" className="mt-0">
+            <TranscriptionTab
+              analysis={analysis}
+              segments={segments}
+              totalSegments={totalSegments}
+              segmentsCursor={segmentsCursor}
+              loadingSegments={loadingSegments}
+              onLoadSegments={loadSegments}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              searching={searching}
+              onSearch={handleSearch}
+              searchResults={searchResults}
+              clearSearch={() => {
+                setSearchResults([]);
+                setSearchQuery('');
+              }}
+              onCopyTranscription={copyTranscription}
+              onSeekTo={handleSeekTo}
+            />
+          </TabsContent>
+
+          <TabsContent value="summary" className="mt-0">
+            <SummaryTab analysis={analysis} />
+          </TabsContent>
+        </Tabs>
+      )}
+
+      {/* Processing state */}
+      {isProcessing && (
+        <Card variant="elevated" className="p-10 text-center">
+          <div className="relative mb-5 inline-block">
+            <div className="h-20 w-20 rounded-full border-4 border-muted border-t-primary animate-spin" />
+            <Headphones
+              className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 text-primary"
+              aria-hidden="true"
+            />
+          </div>
+          <h3 className="mb-2 text-xl font-bold text-foreground">
+            {t('audioDetail.processingTitle')}
+          </h3>
+          <p className="mx-auto mb-5 max-w-md text-muted-foreground">
+            {analysis.current_phase || t('audioDetail.processingDefaultPhase')}
+          </p>
+          {analysis.progress > 0 && (
+            <div
+              className="mx-auto max-w-md"
+              aria-live="polite"
+              aria-label={t('audioDetail.processing')}
+            >
+              <Progress value={analysis.progress} />
+              <p className="mt-2 text-sm font-medium text-muted-foreground">
+                {t('audioDetail.progressCompleted', { percent: Math.round(analysis.progress) })}
+              </p>
+            </div>
+          )}
+          <p className="mt-6 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                streamConnected ? 'bg-success animate-pulse' : 'bg-gray-300'
+              }`}
+              aria-hidden="true"
+            />
+            {streamConnected ? t('audioDetail.liveConnected') : t('audioDetail.autoUpdate')}
+          </p>
+        </Card>
+      )}
+
+      {/* Audio player bottom bar */}
+      {isCompleted && playableUrl && (
+        <div className="fixed bottom-4 left-1/2 z-40 w-[min(900px,calc(100%-2rem))] -translate-x-1/2">
+          <Card variant="elevated" className="border-border/80 bg-card/95 p-4 backdrop-blur-xl">
+            <div className="mb-2.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Radio className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+              {t('audioDetail.playerTitle')}
+            </div>
+            <audio ref={audioRef} controls preload="none" className="w-full" src={playableUrl} />
+          </Card>
+        </div>
+      )}
+    </PageContainer>
   );
+}
+
+function getErrorText(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object') {
+    const withResponse = error as {
+      response?: { data?: { error?: string } };
+      message?: string;
+    };
+    return withResponse.response?.data?.error || withResponse.message || fallback;
+  }
+  return fallback;
 }
