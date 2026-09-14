@@ -881,7 +881,7 @@ class EstadoOperationalAnalysis(Enum):
 # Tipos de análisis operativo disponibles
 # Límite de caracteres para contexto personalizado
 MAX_CUSTOM_CONTEXT_LENGTH = 2000
-_MAX_INLINE_EVENT_IDS = 300   # prevent Firestore 1 MB document limit; events stored separately
+_MAX_INLINE_EVENT_IDS = 300   # limit inline metadata size; events stored separately
 
 OPERATIONAL_ANALYSIS_TYPES = {
     "ACCESS_CONTROL": {

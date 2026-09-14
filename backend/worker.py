@@ -201,7 +201,7 @@ def process_socio_video(video_id: str):
         })
         v_repo.guardar(vid)
 
-        # Callback de progreso (guarda en Firestore)
+        # Callback de progreso (guarda en la base de datos)
         progress_state = {'last_step': None, 'last_status': None}
 
         def progress_callback(step, total, msg, status, details=None):

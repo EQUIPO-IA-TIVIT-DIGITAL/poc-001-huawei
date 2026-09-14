@@ -1007,7 +1007,7 @@ Responde SOLO en JSON sin markdown:
                 sec_logger.info("No hay eventos IMPORTANTES para análisis profundo")
             
             # 6. Guardar eventos en repositorio
-            sec_logger.start_phase("SAVE_EVENTS", f"Guardando {len(classified_segments)} eventos en Firestore")
+            sec_logger.start_phase("SAVE_EVENTS", f"Guardando {len(classified_segments)} eventos en la base de datos")
             self._save_events(video, classified_segments)
             sec_logger.end_phase("SAVE_EVENTS", success=True)
             

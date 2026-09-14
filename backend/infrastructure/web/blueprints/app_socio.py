@@ -186,7 +186,7 @@ def stream_video_status(video_id):
         from domain.entities import EstadoVideo
         
         while True:
-            # Re-obtener video de la BD cada ciclo (o eventualmente escuchar Firestore onSnapshot en backend)
+            # Re-obtener video de la BD cada ciclo (polling; SSE opcional como mejora futura)
             video = get_video_repository().obtener_por_id(video_id)
             if not video:
                 yield "data: {\"status\": \"error\", \"message\": \"Video no encontrado\"}\n\n"
@@ -698,7 +698,7 @@ def start_processing(video_id):
                     # Verificar cancelación
                     check_cancel_callback()
 
-                    # Evitar escrituras redundantes en Firestore
+                    # Evitar escrituras redundantes en la base de datos
                     if (
                         progress_state["last_step"] == step
                         and progress_state["last_status"] == status
@@ -709,7 +709,7 @@ def start_processing(video_id):
 
                     # Guardar progreso en BD (metadata)
                     # NOTA: En un sistema real de altísima concurrencia esto podría ser pesado,
-                    # pero para 7 pasos por video es perfectamente escalable en Firestore.
+                    # pero para 7 pasos por video es perfectamente escalable en PostgreSQL.
                     vid_snap = v_repo.obtener_por_id(vid_id)  # Refrescar
                     vid_snap.agregar_metadatos(
                         "progreso",

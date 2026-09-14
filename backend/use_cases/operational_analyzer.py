@@ -323,7 +323,7 @@ class OperationalAnalyzer:
             save_elapsed = time.time() - save_start
             phase_timings['save_firestore'] = save_elapsed
             
-            # Truncate summary to avoid Firestore 1 MB document limit
+            # Truncate summary to avoid oversized document rows in the database
             if isinstance(summary, dict):
                 analysis.summary = {
                     k: (str(v)[:500] if not isinstance(v, (dict, list)) else v)

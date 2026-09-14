@@ -83,7 +83,7 @@ class AudioAnalyzer:
         logger.info("✅ AudioAnalyzer inicializado")
 
     def _update_progress(self, analysis_id: str, estado, phase: str, progress: float, error_msg: str = ""):
-        """Actualiza el progreso del análisis mediante escritura parcial en Firestore (OPT-03)"""
+        """Actualiza el progreso del análisis mediante escritura parcial en la base de datos (OPT-03)"""
         try:
             self._repo.actualizar_progreso_parcial(analysis_id, estado, phase, progress, error_msg)
         except Exception as e:
@@ -1124,7 +1124,7 @@ class AudioAnalyzer:
 
     @staticmethod
     def _build_search_terms(text: str) -> List[str]:
-        """Construye un índice ligero de términos para búsquedas en Firestore."""
+        """Construye un índice ligero de términos para búsquedas en la base de datos."""
         if not text:
             return []
 

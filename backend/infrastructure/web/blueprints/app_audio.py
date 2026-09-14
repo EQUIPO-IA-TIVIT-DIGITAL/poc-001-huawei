@@ -276,10 +276,10 @@ def iniciar_upload():
             elapsed_ms = (time.perf_counter() - request_start) * 1000
             logger.info(f"[{vid}] ✅ Análisis de audio registrado [{elapsed_ms:.0f}ms]")
         except Exception as save_error:
-            logger.error(f"[{vid}] ❌ Error guardando análisis en Firestore: {save_error}", exc_info=True)
+            logger.error(f"[{vid}] ❌ Error guardando análisis en la base de datos: {save_error}", exc_info=True)
             return jsonify({
                 "success": False,
-                "error": "No se pudo guardar el análisis. Verifica la configuración de Firestore."
+                "error": "No se pudo guardar el análisis. Verifique la conexión a la base de datos."
             }), 500
 
         try:
@@ -695,7 +695,7 @@ def stream_estado(analysis_id: str):
         _last = [None]  # mutable holder para comparar payloads sin nonlocal
 
         def _read_firestore():
-            """Lee estado actual desde Firestore/cache y retorna (status, sse_line | None)."""
+            """Lee estado actual desde la base de datos/cache y retorna (status, sse_line | None)."""
             current = _get_audio_repo().obtener_analisis(analysis_id)
             if not current:
                 err = json.dumps({"success": False, "error": "Análisis no encontrado"}, ensure_ascii=False)

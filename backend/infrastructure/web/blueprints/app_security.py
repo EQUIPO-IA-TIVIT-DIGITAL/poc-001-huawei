@@ -184,7 +184,7 @@ def iniciar_upload():
         # Guardar en repositorio
         _get_security_repo().guardar_video(security_video)
 
-        sec_logger.info(f"✅ Video registrado en Firestore: {video_id}")
+        sec_logger.info(f"✅ Video registrado en la base de datos: {video_id}")
         logger.info(f"✅ Upload iniciado: {video_id}")
 
         elapsed_ms = (time.perf_counter() - request_start) * 1000
@@ -1048,7 +1048,7 @@ def procesar_video(video_id: str):
     1. Motion Detection (OpenCV) - filtra segmentos estáticos
     2. Análisis COMPLETO de TODOS los segmentos con movimiento
     3. Video Intelligence + Gemini para análisis objetivo
-    4. Guardar TODO en Firestore
+    4. Guardar TODO en la base de datos
     5. Generación de reporte completo
     
     Returns:
